@@ -1,0 +1,41 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+const exec = promisify(execFile);
+
+test('actual owner profile reads preserve literal paths, reject ambiguous/mutable input and load no SDK', async t => {
+  await fs.mkdir('.runtime-fixtures', { recursive: true });
+  const root = await fs.realpath(await fs.mkdtemp(path.resolve('.runtime-fixtures/owner-profile-')));
+  let accepted = false;
+  t.after(async () => { if (accepted) await fs.rm(root, { recursive: true, force: true }); else t.diagnostic(`Owner profile failure retained: ${root}`); });
+  const project = path.join(root, 'project'); await fs.mkdir(project);
+  const file = path.join(root, 'target.json');
+  const profile = { projectId: 'P', path: path.join(root, 'receiver'), ref: 'refs/heads/main', basisCommit: 'a'.repeat(40),
+    publicationInventory: ['한국어 공백.txt', 'line\nbreak.txt', 'comma,name', '$() literal'], authorizedDeltaPaths: ['한국어 공백.txt'] };
+  const modulePath = path.resolve('dist/cli/target-profile.js');
+  const script = `import {readTargetProfile} from ${JSON.stringify(modulePath)}; console.log(JSON.stringify(await readTargetProfile(process.argv[1],[process.argv[2]])));`;
+  const read = (selected = file) => exec(process.execPath, ['--import', path.resolve('tests/cli/no-sdk-loader.mjs'), '--input-type=module', '-e', script, selected, project], { timeout: 5000 });
+  await fs.writeFile(file, JSON.stringify(profile), { mode: 0o600 });
+  assert.deepEqual(JSON.parse((await read()).stdout), profile);
+  await fs.chmod(file, 0o644); await assert.rejects(read(), /owner-only/); await fs.chmod(file, 0o600);
+  const alias = path.join(root, 'alias'); await fs.symlink(file, alias); await assert.rejects(read(alias), /canonical/);
+  const hardlink = path.join(root, 'hardlink'); await fs.link(file, hardlink); await assert.rejects(read(), /owner-only/); await fs.unlink(hardlink);
+  const inProject = path.join(project, 'target.json'); await fs.writeFile(inProject, JSON.stringify(profile), { mode: 0o600 });
+  await assert.rejects(read(inProject), /outside registered project/);
+  await fs.writeFile(file, '{"projectId":"P","project\\u0049d":"Q"}'); await assert.rejects(read(), /ambiguous JSON/);
+  await fs.writeFile(file, Buffer.from([0x7b,0x22,0x78,0x22,0x3a,0x22,0xff,0x22,0x7d])); await assert.rejects(read(), /valid UTF-8/);
+  await fs.writeFile(file, JSON.stringify({ ...profile, actor: 'owner' })); await assert.rejects(read(), /requires only/);
+  await fs.writeFile(file, JSON.stringify({ ...profile, authorizedDeltaPaths: ['same', 'same'] })); await assert.rejects(read(), /distinct literal paths/);
+  const publicationModule = path.resolve('dist/cli/publication-profile.js');
+  const publicationScript = `import {readPublicationAction} from ${JSON.stringify(publicationModule)}; console.log(JSON.stringify(await readPublicationAction(process.argv[1])));`;
+  const readPayload = () => exec(process.execPath, ['--import', path.resolve('tests/cli/no-sdk-loader.mjs'), '--input-type=module', '-e', publicationScript, inProject], { timeout: 5000 });
+  const payload = { kind: 'create-issue', title: '한국어 literal $()', body: 'Exact owner data\n@literal stays data until carrier policy evaluates it.' };
+  await fs.writeFile(inProject, JSON.stringify(payload));
+  assert.deepEqual(JSON.parse((await readPayload()).stdout), payload);
+  await fs.writeFile(inProject, JSON.stringify({ ...payload, actor: 'owner' })); await assert.rejects(readPayload(), /unsupported fields/);
+  await fs.writeFile(inProject, '{"kind":"create-issue","title":"x","body":"one","bo\\u0064y":"two"}'); await assert.rejects(readPayload(), /ambiguous JSON/);
+  accepted = true;
+});

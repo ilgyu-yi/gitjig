@@ -1,0 +1,20 @@
+import test from 'node:test';import assert from 'node:assert/strict';import fs from 'node:fs/promises';import path from 'node:path';import {createHash} from 'node:crypto';
+import {buildBundle,nodeProfile,requiredPayload} from '../../dist/installation/bundle.js';import {inventoryTree,assetIdentity} from '../../dist/installation/tree.js';
+const hash=data=>createHash('sha256').update(data).digest('hex');
+test('real pinned offline bundle contains full locked production closure, helpers/themes/criteria and independent copied runtime',{timeout:60000},async t=>{
+ if(!process.env.GITJIG_PRODUCTION_STAGE)throw Error('Explicit locked production staging root required; test not silently skipped');
+ await fs.mkdir('.runtime-fixtures',{recursive:true});const parent=await fs.realpath(await fs.mkdtemp(path.resolve('.runtime-fixtures/bundle stage '))),destination=path.join(parent,'bundle');
+ // Retain actual bundle for the dependent clean-target activation lane; it is never the live owner installation.
+ const manifest=await buildBundle({sourceRoot:await fs.realpath(process.env.GITJIG_BUNDLE_SOURCE_ROOT??'.'),productionRoot:process.env.GITJIG_PRODUCTION_STAGE,nodeBinary:process.execPath,nodeLicense:path.resolve(path.dirname(process.execPath),'../LICENSE'),destination});
+ const sourceRoot=process.env.GITJIG_BUNDLE_SOURCE_ROOT??'.',pkg=JSON.parse(await fs.readFile(path.join(sourceRoot,'package.json'),'utf8'));
+ if(pkg.license==='MIT'){const license=await fs.readFile(path.join(sourceRoot,'LICENSE'));assert.equal(manifest.distribution,'MIT');assert.ok(license.toString('utf8').trim());assert.deepEqual(await fs.readFile(path.join(destination,'payload/LICENSE')),license);assert.equal(manifest.assets.find(a=>a.path==='LICENSE')?.sha256,hash(license));}
+ else assert.equal(manifest.distribution,'private-local-fixture-no-product-license-selected');
+ assert.equal(manifest.platform.sha256,nodeProfile.sha256);assert.equal(manifest.payloadId,assetIdentity(await inventoryTree(path.join(destination,'payload'))));for(const file of requiredPayload)await fs.access(path.join(destination,'payload',file));
+ assert.deepEqual(Object.keys(manifest.source.criteria).sort(),['MISSION.md','PRINCIPLES.md','DESIGN.md','CONTRACTS.md'].sort());
+ for(const file of ['runtime/Dockerfile','runtime/Dockerfile.dockerignore','runtime/io-helper.mjs','runtime/setup.mjs','docs/README.md','docs/installation.md','docs/requirements.md','docs/capabilities.md','docs/providers.md','docs/usage.md','THIRD_PARTY_NOTICES.md'])assert.deepEqual(await fs.readFile(path.join(destination,'payload',file)),await fs.readFile(path.join(sourceRoot,file)));
+ for(const absent of ['src','.git','tests','qualification','.qualification','dist/controller/testing.js','dist/controller/acceptance.js','dist/platform/github-acceptance.js','dist/effects/acceptance-synthetic.js','.runtime-fixtures','node_modules/typescript','CONTRIBUTING.md','AGENTS.md','development'])await assert.rejects(fs.access(path.join(destination,'payload',absent)),{code:'ENOENT'});
+ assert.equal(hash(await fs.readFile(path.join(destination,'bootstrap/node'))),nodeProfile.sha256);assert.equal((await fs.stat(path.join(destination,'bootstrap/node'))).nlink,1);assert.notEqual((await fs.stat(path.join(destination,'bootstrap/node'))).ino,(await fs.stat(process.execPath)).ino);
+ assert.ok(manifest.assets.some(a=>a.kind==='symlink'&&a.path.startsWith('node_modules/.bin/')));assert.ok(manifest.assets.some(a=>a.path.includes('/LICENSE')||a.path.includes('/license')));
+ await fs.writeFile(path.join(parent,'stage-receipt.json'),JSON.stringify({destination,payloadId:manifest.payloadId,files:manifest.assets.length,bytes:manifest.assets.filter(a=>a.kind==='file').reduce((n,a)=>n+a.bytes,0),sourceCheckout:'still-present-build-only',activation:'not-attempted'},null,2));
+ t.diagnostic('Retained built bundle '+destination);if(process.env.GITJIG_BUNDLE_RECEIPT)await fs.writeFile(process.env.GITJIG_BUNDLE_RECEIPT,JSON.stringify({destination,payloadId:manifest.payloadId}));
+});

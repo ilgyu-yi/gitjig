@@ -1,0 +1,22 @@
+// Offline build from explicit verified production closure and current source/build.
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
+import { compileSource } from './compile-source.mjs';
+const source = await fs.realpath(fileURLToPath(new URL('../../', import.meta.url))), root = await fs.realpath(process.argv[2]), oldBundle = await fs.realpath(process.argv[3]), productionRoot = path.join(oldBundle, 'payload');
+const emitted = path.join(root, 'compiled-dist'), { buildBundle, inventoryTree, assetIdentity, inputs: compileInputs, assertSourceCurrent } = await compileSource(source, emitted);
+const oldManifest = JSON.parse(await fs.readFile(path.join(oldBundle, 'bundle.json'), 'utf8'));
+const original = await inventoryTree(productionRoot); assert.deepEqual(original, oldManifest.assets); assert.equal(assetIdentity(original), oldManifest.payloadId);
+const frozen = path.join(root, 'frozen-source'); await fs.mkdir(frozen, { mode: 0o700 });
+for (const name of ['src', 'runtime', 'dist', 'docs', 'package.json', 'package-lock.json', 'tsconfig.json', 'MISSION.md', 'PRINCIPLES.md', 'DESIGN.md', 'CONTRACTS.md', 'README.md', 'THIRD_PARTY_NOTICES.md', 'LICENSE']) await fs.cp(name === 'dist' ? emitted : path.join(source, name), path.join(frozen, name), { recursive: true, errorOnExist: true, force: false });
+const bindings = await inventoryTree(frozen);
+const current = async () => { for (const asset of bindings.filter(x => x.kind === 'file')) assert.equal(createHash('sha256').update(await fs.readFile(asset.path.startsWith('dist/') ? path.join(emitted, asset.path.slice(5)) : path.join(source, asset.path))).digest('hex'), asset.sha256, asset.path); };
+await current();
+const manifest = await buildBundle({ sourceRoot: frozen, productionRoot, nodeBinary: process.execPath, nodeLicense: path.resolve(path.dirname(process.execPath), '../LICENSE'), destination: path.join(root, 'bundle') });
+assert.deepEqual(await inventoryTree(productionRoot), original); assert.deepEqual(await inventoryTree(frozen), bindings); await current();
+await assertSourceCurrent();
+const receipt = { destination: path.join(root, 'bundle'), payloadId: manifest.payloadId, frozen, source, bindings, compileInputs, productionRoot, originalPayloadId: oldManifest.payloadId, verifiedOriginalClosure: true };
+await fs.writeFile(path.join(root, 'build-receipt.json'), JSON.stringify(receipt, null, 2), { mode: 0o600 });
+console.log(JSON.stringify({ payloadId: manifest.payloadId, root, assets: manifest.assets.length, frozenInputs: bindings.length }));

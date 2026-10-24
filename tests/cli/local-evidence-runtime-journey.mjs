@@ -1,0 +1,47 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import {execFile} from 'node:child_process';
+import {promisify} from 'node:util';
+import {DatabaseSync} from 'node:sqlite';
+const execute=promisify(execFile),git=(await execute('/usr/bin/which',['git'])).stdout.trim();
+export async function localEvidenceRuntimeJourney(t,{entry,environment=process.env,workingDirectory=process.cwd()}){
+ for(const key of ['GITJIG_RUNTIME_FIXTURE_ROOT','GITJIG_DOCKER_BINARY','GITJIG_DOCKER_CONTEXT','GITJIG_RUNTIME_IMAGE','GITJIG_DOCKER_CONFIG_DIRECTORY'])assert.ok(environment[key],'Explicit prerequisite '+key);
+ const root=await fs.realpath(await fs.mkdtemp(path.join(environment.GITJIG_RUNTIME_FIXTURE_ROOT,'local-evidence-'))),source=path.join(root,'source'),home=path.join(root,'home');let accepted=false;
+ t.after(async()=>{if(accepted)await fs.rm(root,{recursive:true,force:true});else t.diagnostic('Retained original evidence/runtime fixture: '+root);});await fs.mkdir(source,{mode:0o700});
+ const native=async(...args)=>(await execute(git,args,{cwd:source,env:{...environment,GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:'/dev/null'}})).stdout;
+ await native('init','-b','feat/evidence');await native('config','user.name','Local Developer');await native('config','user.email','local@example.invalid');await fs.writeFile(path.join(source,'answer'),'base');await native('add','.');await native('commit','-m','base');await fs.writeFile(path.join(source,'answer'),'good');await native('add','answer');
+ const cli=async args=>{try{return {code:0,...await execute(entry[0],[...entry.slice(1),...args],{cwd:workingDirectory,env:environment,timeout:30000,maxBuffer:2*1024*1024})};}catch(e){if(typeof e.code==='number')return {code:e.code,stdout:e.stdout,stderr:e.stderr};throw e;}};
+ assert.equal((await cli(['project','register','--home',home,'--id','p','--root',source])).code,0);
+ const runtime=['--docker-binary',environment.GITJIG_DOCKER_BINARY,'--docker-context',environment.GITJIG_DOCKER_CONTEXT,'--image',environment.GITJIG_RUNTIME_IMAGE,'--docker-config-directory',environment.GITJIG_DOCKER_CONFIG_DIRECTORY];
+ let work;
+ const check=async(command,cwd='work')=>{const r=await cli(['local','check','--home',home,'--project','p','--command',command,'--cwd',cwd,...runtime,...(work?['--checkpoint',work]:[])]);assert.ok(r.stdout,r.stderr);const result=JSON.parse(r.stdout);if(work)assert.equal(result.workId,work);else work=result.workId;return {...r,result};};
+ const evidence=()=>cli(['local','evidence','--home',home,'--project','p','--work',work,'--git-binary',git]);
+ const command='test "$(cat /work/answer)" = good && printf source-checked';const first=await check(command);assert.equal(first.code,0,first.stderr+first.stdout);assert.equal(first.result.cleanup,'removed');
+ await fs.mkdir(path.join(home,'config'),{mode:0o700});await fs.writeFile(path.join(home,'config/startup.json'),'{broken',{mode:0o600});
+ const original=await fs.readFile(path.join(source,'.git/index')),current=await evidence();assert.equal(current.code,0,current.stderr);const view=JSON.parse(current.stdout);assert.equal(view.status,'CURRENT');assert.equal(view.runId,first.result.runId);assert.equal(view.originalCapture,first.result.captureRef);assert.equal(view.command,command);assert.equal(view.sourceMatches,true);assert.deepEqual(view.index.mismatchedPaths,[]);assert.match(view.scope,/Not test adequacy/);assert.deepEqual(await fs.readFile(path.join(source,'.git/index')),original);
+ await native('update-index','--assume-unchanged','answer');await fs.writeFile(path.join(source,'answer'),'evil');assert.equal(await native('status','--porcelain'),'M  answer\n','Native status hides the unstaged edit while retaining the intended staged change');
+ const hidden=await evidence();assert.equal(hidden.code,1,hidden.stderr);assert.ok(JSON.parse(hidden.stdout).index.mismatchedPaths.includes('answer'));
+ await fs.unlink(path.join(home,'config/startup.json'));
+ await native('update-index','--no-assume-unchanged','answer');await fs.writeFile(path.join(source,'answer'),'good');await fs.writeFile(path.join(source,'.gitignore'),'ignored-context\n');await fs.writeFile(path.join(source,'ignored-context'),'context-1');await native('add','.gitignore');
+ const contextual='test "$(cat /work/answer)" = good && test "$(cat /work/ignored-context)" = context-1';const second=await check(contextual);assert.equal(second.code,0,second.stdout+second.stderr);assert.notEqual(second.result.runId,first.result.runId);
+ const again=await evidence();assert.equal(again.code,0,again.stderr);assert.equal(JSON.parse(again.stdout).runId,second.result.runId);
+ const rules=path.join(root,'rules.json'),message=path.join(root,'message');
+ await fs.writeFile(rules,JSON.stringify({protectedBranches:['main','master'],branchPrefixes:[],commitTypes:[],subjectMaxLength:72,requireBody:false}),{mode:0o600});await fs.writeFile(message,'Checked local source\n',{mode:0o600});
+ await fs.writeFile(path.join(home,'config/startup.json'),'{broken',{mode:0o600});
+ const configured=await cli(['local','configure','--home',home,'--project','p','--revision','0','--profile',rules]);assert.equal(configured.code,0,configured.stderr);
+ await fs.writeFile(path.join(source,'answer'),'changed-after-check');const staleCandidate=await cli(['local','candidate','--home',home,'--project','p','--work',work,'--git-binary',git,'--message-file',message]);assert.equal(staleCandidate.code,2,staleCandidate.stdout+staleCandidate.stderr);const noCandidates=await cli(['local','candidates','--home',home,'--project','p']);assert.equal(noCandidates.code,0,noCandidates.stderr);assert.deepEqual(JSON.parse(noCandidates.stdout).candidates,[]);await fs.writeFile(path.join(source,'answer'),'good');
+ const recorded=await cli(['local','candidate','--home',home,'--project','p','--work',work,'--git-binary',git,'--message-file',message]);assert.equal(recorded.code,0,recorded.stderr);const receipt=JSON.parse(recorded.stdout).candidate;assert.equal(receipt.check.runId,second.result.runId);
+ const discovered=await cli(['local','candidates','--home',home,'--project','p']);assert.equal(discovered.code,0,discovered.stderr);assert.equal(JSON.parse(discovered.stdout).candidates[0].candidateId,receipt.id);
+ await native('commit','--cleanup=verbatim','-F',message);const committed=(await native('rev-parse','HEAD')).trim();
+ const audit=(commit=committed)=>cli(['local','audit','--home',home,'--project','p','--candidate',receipt.id,'--commit',commit,'--git-binary',git]);
+ const match=await audit();assert.equal(match.code,0,match.stderr);assert.equal(JSON.parse(match.stdout).status,'MATCH');assert.equal(JSON.parse(match.stdout).actual.oid,committed);await fs.unlink(path.join(home,'config/startup.json'));
+ await fs.writeFile(path.join(source,'ignored-context'),'context-2');const drift=await evidence();assert.equal(drift.code,1,drift.stderr);assert.equal(JSON.parse(drift.stdout).sourceMatches,false);assert.deepEqual(JSON.parse(drift.stdout).index.mismatchedPaths,[]);
+ const failed=await check(contextual);assert.equal(failed.code,1,failed.stdout+failed.stderr);assert.equal(failed.result.status,'failed');const refused=await evidence();assert.equal(refused.code,2);assert.match(refused.stderr,/fully settled successful/);
+ const scratch=await check('true','scratch');assert.equal(scratch.code,0,scratch.stdout+scratch.stderr);const unrelated=await evidence();assert.equal(unrelated.code,2);assert.match(unrelated.stderr,/Scratch-dependent/);
+ const historical=await audit();assert.equal(historical.code,0,historical.stderr);assert.equal(JSON.parse(historical.stdout).expected.check.runId,second.result.runId);assert.equal(JSON.parse(historical.stdout).current.work.currentResultRunId,scratch.result.runId);
+ await fs.writeFile(path.join(source,'.git/hooks/pre-commit'),'#!/bin/sh\ngit rm -f -- answer\n',{mode:0o700});await native('commit','--amend','--cleanup=verbatim','-F',message);const changed=(await native('rev-parse','HEAD')).trim();
+ const mismatch=await audit(changed);assert.equal(mismatch.code,1,mismatch.stderr);const altered=JSON.parse(mismatch.stdout);assert.equal(altered.status,'MISMATCH');assert.deepEqual(altered.checks,{objectFormat:true,wholeTree:false,message:true,parents:true});assert.equal((await native('rev-parse','HEAD')).trim(),changed);
+ const db=new DatabaseSync(path.join(home,'state/controller.sqlite'),{readOnly:true});try{assert.equal(db.prepare('SELECT COUNT(*) AS n FROM works').get().n,1);assert.equal(db.prepare('SELECT consumed,reserved FROM budgets WHERE kind=\'execution\'').get().consumed,4);assert.equal(db.prepare('SELECT COUNT(*) AS n FROM role_launches').get().n,0);assert.equal(db.prepare("SELECT COUNT(*) AS n FROM capacity_leases WHERE state!='RELEASED'").get().n,0);assert.equal(db.prepare("SELECT COUNT(*) AS n FROM runs WHERE phase!='SETTLED'").get().n,0);}finally{db.close();}
+ assert.deepEqual((await fs.readdir(path.join(home,'inputs'))).filter(n=>n.startsWith('local-evidence-')),[]);t.diagnostic(JSON.stringify({scope:'Actual public CLI local check, current evidence, candidate, native commit and historical audit; no model or seeded success',entry,home,workId:work,checkRunId:second.result.runId,candidateId:receipt.id,committed,changed}));accepted=true;
+}

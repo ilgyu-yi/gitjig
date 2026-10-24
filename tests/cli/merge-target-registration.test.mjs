@@ -1,0 +1,20 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import {DatabaseSync} from 'node:sqlite';
+import {execFile} from 'node:child_process';
+import {promisify} from 'node:util';
+import {subject} from '../controller/merge-controller-fixture.mjs';
+const execute=promisify(execFile);
+test('public CLI registers one actual native PR identity and preserves authority across duplicate, syntax and actor refusals',{timeout:30000},async t=>{
+ const f=await subject(t,{registerMerge:false}),credential=path.join(f.native.root,'merge-credential.json');await fs.writeFile(credential,JSON.stringify({token:'owned-native-merge-only'}),{mode:0o600});await f.c.close();
+ const read=sql=>{const db=new DatabaseSync(path.join(f.home,'state/controller.sqlite'),{readOnly:true});try{return db.prepare(sql).all();}finally{db.close();}},ledger=()=>JSON.stringify(['works','runs','sources','budgets','effect_operations','effect_delegations','effect_receipts'].map(table=>read('SELECT * FROM '+table+' ORDER BY rowid'))),before=ledger();
+ const env={PATH:'/usr/bin:/bin',HOME:f.native.root,TMPDIR:path.join(f.home,'artifacts'),LANG:'C.UTF-8',NODE_OPTIONS:'',NODE_PATH:'',TEST_OWNED_MERGE_ORIGIN:f.native.origin};
+ const args=['merge','register-target','--home',f.home,'--resource',f.registration.resourceId,'--source-target',f.registration.sourceBranchTargetId,'--base','main','--credential-profile',credential],cli=async selected=>execute(process.execPath,['--import','./tests/cli/merge-target-preload.mjs','dist/cli/main.js',...selected],{env,timeout:10000,maxBuffer:1024*1024});
+ const first=JSON.parse((await cli(args)).stdout),second=JSON.parse((await cli(args)).stdout);assert.equal(second.targetId,first.targetId);assert.equal(read("SELECT id FROM effect_targets WHERE json_extract(data,'$.kind')='github-merge'").length,1);assert.equal(ledger(),before);
+ const observations=read('SELECT * FROM authority_observations').length,requests=f.native.requests.length,invalid=[...args];invalid[invalid.indexOf('--base')+1]='bad branch';await assert.rejects(cli(invalid),error=>error.code===2&&/literal Git branch/.test(error.stderr));await assert.rejects(cli([...args,'--origin',f.native.origin]),error=>error.code===2);assert.equal(f.native.requests.length,requests);assert.equal(read('SELECT * FROM authority_observations').length,observations);assert.equal(ledger(),before);
+ f.native.options.wrongUser=true;await assert.rejects(cli(args),error=>error.code===2&&/native merge account or repository unavailable/.test(error.stderr));assert.equal(read('SELECT * FROM authority_observations').length,observations);assert.equal(ledger(),before);
+ const database=path.join(f.home,'state/controller.sqlite'),project=read("SELECT profile FROM projects WHERE id='P'")[0].profile,requestsBeforeBounds=f.native.requests.length,db=new DatabaseSync(database);db.prepare('UPDATE projects SET profile=? WHERE id=?').run(JSON.stringify({controlledOversizedCurrentProfile:'x'.repeat(131072)}),'P');db.close();const boundedArgs=[...args];boundedArgs[boundedArgs.indexOf('--credential-profile')+1]=path.join(f.native.root,'CREDENTIAL_MUST_NOT_BE_READ.json');
+ try{await assert.rejects(cli(boundedArgs),error=>error.code===2&&/Original bounded registered project unavailable/.test(error.stderr));}finally{const restore=new DatabaseSync(database);restore.prepare('UPDATE projects SET profile=? WHERE id=?').run(project,'P');restore.close();}assert.equal(f.native.requests.length,requestsBeforeBounds);assert.equal(ledger(),before);assert.equal(f.native.puts(),0);f.native.pass();
+});

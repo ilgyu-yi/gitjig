@@ -1,0 +1,27 @@
+import test from 'node:test';import assert from 'node:assert/strict';import fs from 'node:fs/promises';import path from 'node:path';import {tmpdir} from 'node:os';import {spawnSync} from 'node:child_process';import {fileURLToPath} from 'node:url';import {DatabaseSync} from 'node:sqlite';
+const main=fileURLToPath(new URL('../../dist/cli/main.js',import.meta.url));
+test('actual CLI manages durable goals before model/runtime availability',{timeout:18000},async t=>{
+ const root=await fs.realpath(await fs.mkdtemp(path.join(tmpdir(),'gitjig-goal-cli-'))),home=path.join(root,'app'),guard=path.join(root,'guard.mjs'),records=[],deadline=performance.now()+15000;let failure;
+ t.diagnostic('Retained goal CLI world: '+root);for(const name of['user','tmp'])await fs.mkdir(path.join(root,name),{mode:0o700});
+ await fs.writeFile(guard,"import cp from'node:child_process';import net from'node:net';import http from'node:http';import https from'node:https';import{syncBuiltinESMExports}from'node:module';const no=()=>{process.exitCode=1;throw Error('GOAL_MANAGEMENT_NO_PRODUCER');};globalThis.fetch=no;net.Socket.prototype.connect=no;for(const api of[http,https])for(const key of['request','get'])api[key]=no;for(const key of['spawn','spawnSync','exec','execSync','execFile','execFileSync','fork'])cp[key]=no;syncBuiltinESMExports();",{mode:0o600});
+ const env={PATH:'/usr/bin:/bin',HOME:path.join(root,'user'),TMPDIR:path.join(root,'tmp'),USER:'owned',LOGNAME:'owned',LANG:'C',SHELL:'/bin/sh'};
+ const cli=(args,expected=0)=>{
+  const remaining=deadline-performance.now();assert.ok(remaining>0,'Finite CLI admission deadline');const result=spawnSync(process.execPath,['--import',guard,main,...args,'--home',home],{env,cwd:root,timeout:Math.min(2000,remaining),maxBuffer:131072,encoding:'utf8'});records.push({args,status:result.status,signal:result.signal,error:result.error?String(result.error):null,stdout:result.stdout,stderr:result.stderr});
+  assert.equal(result.error,undefined);assert.equal(result.signal,null);assert.equal(result.status,expected,result.stderr);const response=expected===0?result.stdout:result.stderr.split('\n').find(line=>line.startsWith('{'));assert.ok(response,'CLI must emit a structured response alongside any Node diagnostics');return JSON.parse(response);
+ };
+ try{
+  const created=cli(['conversation','create']),cid=created.conversationId;assert.ok(cid);
+  const first=cli(['goal','create','--conversation',cid,'--objective','Retain owner intent','--criteria','["Observable completion"]','--turn-limit','4']);assert.equal(first.state,'READY');assert.equal(first.revision,1);assert.equal(first.startedAttempts,0);assert.equal(first.turnLimit,4);
+  assert.match(cli(['goal','create','--conversation',cid,'--objective','Duplicate','--criteria','["No ambiguous goal"]'],2).message,/unfinished goal/);
+  assert.deepEqual(cli(['goal','inspect','--goal',first.goalId]),first);assert.equal(cli(['goal','list']).length,1);
+  const extended=cli(['goal','extend','--goal',first.goalId,'--revision','1','--units','2','--reason','Explicit owner extension']);assert.equal(extended.turnLimit,6);assert.equal(extended.startedAttempts,0);assert.equal(extended.revision,2);
+  cli(['goal','pause','--goal',first.goalId,'--revision','1','--reason','Stale mutation'],2);assert.deepEqual(cli(['goal','inspect','--goal',first.goalId]),extended);
+  const revised=cli(['goal','revise','--goal',first.goalId,'--revision','2','--objective','Revised owner intent','--criteria','["Current criterion","Retain history"]','--reason','Explicit definition update']);assert.equal(revised.revision,3);assert.equal(revised.objective,'Revised owner intent');assert.deepEqual(revised.criteria,['Current criterion','Retain history']);assert.equal(revised.turnLimit,6);
+  cli(['goal','revise','--goal',first.goalId,'--revision','3','--objective','Invalid','--criteria','[]','--reason','Invalid input'],2);assert.deepEqual(cli(['goal','inspect','--goal',first.goalId]),revised);
+  const paused=cli(['goal','pause','--goal',first.goalId,'--revision','3','--reason','Owner pause']);assert.equal(paused.state,'PAUSED');assert.equal(paused.revision,4);
+  const cancelled=cli(['goal','cancel','--goal',first.goalId,'--revision','4','--reason','Owner withdrawal']);assert.equal(cancelled.state,'CANCELLED');assert.equal(cancelled.revision,5);assert.equal(cancelled.startedAttempts,0);assert.ok(cancelled.events.length>=first.events.length+4);
+  const next=cli(['goal','create','--conversation',cid,'--objective','New independent goal','--criteria','["Explicit new goal"]']);assert.notEqual(next.goalId,first.goalId);const listed=cli(['goal','list']);assert.equal(listed.length,2);assert.equal(listed.find(g=>g.goalId===first.goalId).state,'CANCELLED');
+  const db=new DatabaseSync(path.join(home,'state/controller.sqlite'),{readOnly:true});try{assert.equal(db.prepare('PRAGMA user_version').get().user_version,8);for(const name of['works','runs','goal_attempts','goal_reviews','capacity_leases'])assert.equal(db.prepare('SELECT COUNT(*) AS n FROM '+name).get().n,0,name);}finally{db.close();}
+  await assert.rejects(fs.access(path.join(home,'config/auth.json')),{code:'ENOENT'});
+ }catch(error){failure=error;throw error;}finally{await fs.writeFile(path.join(root,'receipt.json'),JSON.stringify({complete:!failure,failure:failure?String(failure):null,scope:'Model-free original CLI management; not goal generation',records},null,2));}
+});

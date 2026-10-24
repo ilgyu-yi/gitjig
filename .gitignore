@@ -1,0 +1,15 @@
+node_modules/
+dist/
+.qualification/
+*.tsbuildinfo
+.DS_Store
+.env
+.env.*
+!.env.example
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+__pycache__/
+.test-dist/
+.runtime-fixtures/*
+!.runtime-fixtures/.gitkeep

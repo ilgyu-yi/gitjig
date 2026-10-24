@@ -1,0 +1,18 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import os from 'node:os';
+import {spawn} from 'node:child_process';
+import {openController} from '../../dist/controller/index.js';
+import {configureOwnedPublicationFixture} from '../../.qualification/controller-testing.js';
+import {publicationServer,target,issue} from './publication-fixture.mjs';
+for(const mode of ['before-native','after-accept'])test('FULL Controller hardcrash '+mode+' retains durable UNKNOWN and exact op/read-only recovery without resend',{timeout:10000},async()=>{
+ const f=await publicationServer(),root=await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(),'gitjig-publication-crash-'))),home=path.join(root,'home'),marker=path.join(root,'handoff.json');let c=await openController({installationHome:home}),passed=false;
+ try{
+ const t=c.registerPublicationTarget({target,visibility:'public'});configureOwnedPublicationFixture(c,{origin:f.origin,token:'fixture-original'});const p=await c.prepareOwnerPublication({targetId:t.targetId,action:issue()});assert.equal(p.phase,'RESERVED');await c.close();const hold=mode==='after-accept'?f.holdNextPost():null,child=spawn(process.execPath,['tests/controller/publication-crash-child.mjs',home,p.operationId,f.origin,mode,marker],{cwd:process.cwd(),stdio:['ignore','pipe','pipe']});let errors='';child.stderr.on('data',b=>errors+=b);const ended=new Promise((resolve,reject)=>{child.once('error',reject);child.once('exit',(code,signal)=>resolve({code,signal}));});if(hold){let deadline;try{await Promise.race([hold.entered,new Promise((_,reject)=>deadline=setTimeout(()=>reject(Error('No actual accepted POST: '+errors)),4000))]);}finally{clearTimeout(deadline);}assert.equal(f.rows.length,1);child.kill('SIGKILL');}const exit=await ended;assert.equal(exit.signal,'SIGKILL',errors);hold?.release();
+ c=await openController({installationHome:home});let view=c.inspectPublication(p.operationId);assert.equal(view.phase,'UNKNOWN',JSON.stringify(view));assert.equal(view.transportOutcome,'uncertain');assert.equal(c.store.one("SELECT COUNT(*) AS n FROM effect_receipts WHERE operation=? AND kind='publication-send'",p.operationId).n,0);const w=c.inspectWork(p.workId);assert.equal(w.allowance.consumed,2);assert.equal(w.allowance.reserved,0);assert.equal(w.state,'INTERRUPTED');assert.equal(c.store.one('SELECT COUNT(*) AS n FROM effect_operations').n,1);
+ if(mode==='before-native'){assert.equal(JSON.parse(await fs.readFile(marker,'utf8')).phase,'INVOKING');assert.equal(f.rows.length,0);}else assert.equal(f.rows.length,1);
+ configureOwnedPublicationFixture(c,{origin:f.origin,token:'fixture-weak'});const beforeQuiesce=f.requests.length;await c.settleInteractionHost({identities:[]});await assert.rejects(c.reconcilePublication({operationId:p.operationId}),/quiesced/);assert.equal(f.requests.length,beforeQuiesce);await c.close();c=await openController({installationHome:home});configureOwnedPublicationFixture(c,{origin:f.origin,token:'fixture-weak'});const count=f.requests.filter(r=>r.method==='POST').length;view=await c.reconcilePublication({operationId:p.operationId});assert.equal(view.phase,mode==='after-accept'?'CONFIRMED':'UNKNOWN');assert.equal(view.transportOutcome,'uncertain');assert.equal(f.requests.filter(r=>r.method==='POST').length,count);assert.equal(count,mode==='after-accept'?1:0);assert.equal(c.store.one('SELECT COUNT(*) AS n FROM effect_operations').n,1);passed=true;
+ }finally{await c.close();await f.close();if(passed)await fs.rm(root,{recursive:true,force:true});else console.error('Retained crash fixture '+root);}
+});
