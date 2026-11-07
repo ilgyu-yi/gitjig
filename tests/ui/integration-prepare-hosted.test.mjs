@@ -1,0 +1,11 @@
+import '../normal-hosted/no-external.mjs';
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {hostedReadWorld} from './integration-hosted-read-fixture.mjs';
+import {snapshot} from '../controller/integration-registry-fixture.mjs';
+import {readCommand} from './integration-command-fixture.mjs';
+import {scripted} from '../controller/effect-fixture.mjs';
+async function world(t){const f=await hostedReadWorld(t);f.c.store.run("UPDATE effect_operations SET phase='PREPARED',data=json_remove(data,'$.dispatchRun') WHERE id=?",f.op.operationId);f.conversation=f.c.createConversation().conversationId;return {...f,model:scripted()};}
+const choices=['Retained integrations','github-existing-ref','Review original integration preparation','Prepare this original integration','Back','Close'];
+test('hosted preparation credential cancellation is pure; genuine missing procedure does not admit native work',async t=>{const f=await world(t),before=snapshot(f.c),requests=f.rest.requests.length,native=f.native.requests.length,cancel=readCommand(f,[...choices],[],{model:f.model});await cancel.run();await cancel.ui.close();assert.equal(snapshot(f.c),before);const accepted=readCommand(f,[...choices],[f.credential],{model:f.model});await assert.rejects(accepted.run());await accepted.ui.close();assert.equal(snapshot(f.c),before);assert.equal(f.rest.requests.length,requests);assert.equal(f.native.requests.length,native);f.pass();});
+test('hosted preparation captures exact credential session before original mutation',async t=>{const f=await world(t),trust=f.c.effects.trustedProfile.bind(f.c.effects),context=f.c.inspectIntegrationPreparation(f.op.operationId),before=snapshot(f.c);f.c.effects.trustedProfile=async(...args)=>{const profile=await trust(...args);f.configure({token:f.native.token});return profile;};await assert.rejects(f.c.prepareRetainedIntegration({workId:f.op.workId,targetId:f.op.targetId,operationId:f.op.operationId,model:f.model,expectedContext:context.contextFingerprint}),/session changed/);assert.equal(snapshot(f.c),before);f.c.effects.trustedProfile=trust;f.c.effects.hostedSession=undefined;await assert.rejects(f.c.prepareRetainedIntegration({workId:f.op.workId,targetId:f.op.targetId,operationId:f.op.operationId,model:f.model,expectedContext:context.contextFingerprint}));assert.equal(snapshot(f.c),before);f.pass();});

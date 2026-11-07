@@ -1,0 +1,30 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import {pathToFileURL} from 'node:url';
+import {execFile} from 'node:child_process';
+import {promisify} from 'node:util';
+import {scripted} from './tests/controller/effect-fixture.mjs';
+import {qualifySourceSaveTerminal} from './tests/controller/source-snapshot-terminal-case.mjs';
+const execute=promisify(execFile),payload=await fs.realpath(process.env.GITJIG_INSTALLED_SOURCE_PAYLOAD);
+const {openController}=await import(pathToFileURL(path.join(payload,'dist/controller/index.js')).href);
+const cfg=JSON.parse(await fs.readFile(process.env.GITJIG_INSTALLED_SOURCE_CASE,'utf8'));
+assert.ok(['en','ko'].includes(cfg.locale));
+const {root,source,home,operator,git,runtime,locale}=cfg;
+const options={installationHome:home,runtimeProfile:runtime,effectsProfile:{gitBinary:git},sourceGitRoute:{kind:'available',environment:{home:operator}}};
+const env={PATH:'/usr/bin:/bin',HOME:operator,LANG:'C',LC_ALL:'C',GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:'/dev/null'};
+const setup=args=>execute(git,['-c','gc.auto=0','-c','maintenance.auto=false',...args],{cwd:source,env,timeout:5000});
+const previous=process.env.TMPDIR;process.env.TMPDIR=path.join(home,'artifacts');
+let c;
+try {
+ c=await openController(options);
+ await c.registerProject({id:'P',sourceRoot:source});
+ const normalStarted=performance.now();
+ const started=await c.beginChange({projectId:'P',request:'Consumer exports3 using exact original checker',executionLimit:9,resolutionLimit:8});
+ const result=await c.driveChange({workId:started.workId,model:scripted()});assert.equal(result.reviewReady,true,JSON.stringify(result.blocked));
+ assert.deepEqual({...c.store.one("SELECT lim,consumed,reserved FROM budgets WHERE lineage=? AND kind='execution'",started.workId)},{lim:9,consumed:8,reserved:0});
+ const driverResourceUsage=process.resourceUsage();for(const key of ['maxRSS','userCPUTime','systemCPUTime'])assert.ok(Number.isFinite(driverResourceUsage[key])&&driverResourceUsage[key]>=0);assert.ok(driverResourceUsage.maxRSS>0);
+ await fs.writeFile(path.join(root,'installed-normal-procedure.json'),JSON.stringify({workId:started.workId,result,normalElapsedMs:performance.now()-normalStarted,normalTimeScope:'beginChange through driveChange with scripted judgments; registration excluded',driverResourceUsage,resourceScope:'Driver PID during normal procedure only; not UI/Native/process-tree peak',source:payload,scope:'Actual installed Controller/SDK and owned Docker with scripted public model judgments; no standing seed or paid provider'},null,2));
+ await qualifySourceSaveTerminal({c,options,root,workId:started.workId,git,setup,source,locale,...cfg.original,index:Buffer.from(cfg.original.index,'base64'),sourceBytes:Buffer.from(cfg.original.sourceBytes,'base64')});
+ process.stdout.write(JSON.stringify({root,workId:started.workId,locale,receipt:path.join(root,'source-save-terminal-result.json')})+'\n');
+} finally {await c?.close();if(previous===undefined)delete process.env.TMPDIR;else process.env.TMPDIR=previous;}

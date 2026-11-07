@@ -1,0 +1,3 @@
+import {openController} from '../../dist/controller/controller.js';
+import {configureOwnedPublicationFixture} from '../../.qualification/controller-testing.js';
+const input=JSON.parse(process.argv[2]);const c=await openController({installationHome:input.home});configureOwnedPublicationFixture(c,{origin:input.origin,token:'fixture-original'});const publisher=c.publicationEngine,original=publisher.receipt.bind(publisher);publisher.receipt=(...args)=>{const result=original(...args);if(args[1]==='publication-send'&&args[2].handoff==='request-created'&&args[2].outcome==='confirmed')process.kill(process.pid,'SIGKILL');return result;};await c.dispatchPublication({operationId:input.operationId});throw Error('Owned SIGKILL cut not reached');

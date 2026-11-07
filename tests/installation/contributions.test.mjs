@@ -1,0 +1,20 @@
+import {installedQualificationModule} from './qualification-sidecar.mjs';
+import test from 'node:test';import assert from 'node:assert/strict';import fs from 'node:fs/promises';import path from 'node:path';import os from 'node:os';import{execFile}from'node:child_process';import{promisify}from'node:util';import{pathToFileURL}from'node:url';
+import{fixture,repository,resource}from'../contributions/fixture.mjs';
+const execute=promisify(execFile);
+test('installed native contribution reader and public offline summary retain useful human intent/check/review union without model or publication',{timeout:12000},async t=>{
+ if(!process.env.GITJIG_INSTALL_RECEIPT)throw Error('Explicit actual installed candidate required');const{home,payloadId}=JSON.parse(await fs.readFile(process.env.GITJIG_INSTALL_RECEIPT,'utf8')),payload=path.join(home,'versions',payloadId),node=path.join(home,'bootstrap/node'),f=await fixture();
+ // Reuse the owned native HTTP server only. Its source-controller fixture is closed
+ // before this subject starts; no rows/proof from that unused home are transferred.
+ await f.c.close();t.after(()=>f.close());f.merged.add(1);f.merged.add(2);
+ const root=await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(),'installed contributions '))),worker=path.join(root,'worker.mjs'),result=path.join(root,'receipt.json');
+ await fs.writeFile(worker,`
+import assert from 'node:assert/strict';import fs from 'node:fs/promises';
+import{openController}from ${JSON.stringify(pathToFileURL(path.join(payload,'dist/controller/index.js')).href)};
+import{configureOwnedContributionFixture}from ${JSON.stringify(installedQualificationModule(payload,'controller-testing.js'))};
+const c=await openController({installationHome:${JSON.stringify(home)}});try{configureOwnedContributionFixture(c,{origin:${JSON.stringify(f.origin)},token:'fixture-only'});const before=c.store.one('SELECT COUNT(*) n FROM role_launches').n,works=c.store.one('SELECT COUNT(*) n FROM works').n;
+const a=await c.trackRepositoryResource(${JSON.stringify(resource(1))}),b=await c.trackRepositoryResource(${JSON.stringify(resource(2))}),d=await c.trackRepositoryResource({repository:${JSON.stringify(repository)},kind:'issue',number:8});await c.setResourceSummaryParent({childId:a.resourceId,parentId:d.resourceId,expectedRevision:0});await c.setResourceSummaryParent({childId:b.resourceId,parentId:d.resourceId,expectedRevision:0});const summary=c.prepareContributionSummary({resourceId:d.resourceId});assert.equal(summary.complete,true);assert.equal(summary.contributionCount,2);assert.match(summary.body,/Human change1/);assert.match(summary.body,/Human change2/);assert.match(summary.body,/Preserve meaning/);assert.match(summary.body,/actual fixture CI/);assert.match(summary.body,/historical permission/);assert.equal(c.store.one('SELECT COUNT(*) n FROM role_launches').n,before);assert.equal(c.store.one('SELECT COUNT(*) n FROM works').n,works);await fs.writeFile(${JSON.stringify(result)},JSON.stringify({home:${JSON.stringify(home)},payloadId:${JSON.stringify(payloadId)},resourceId:d.resourceId,summary,authority:'Native owned HTTP facts only; no inferred historical permission or account-diverse agent approval'},null,2));}finally{await c.close();}
+`);
+ const env={...process.env,TMPDIR:path.join(home,'artifacts'),NODE_OPTIONS:'',NODE_PATH:'',PI_PACKAGE_DIR:''};await execute(node,[worker],{cwd:root,env,timeout:8000,maxBuffer:2**20});const receipt=JSON.parse(await fs.readFile(result,'utf8')),calls=f.calls;
+ const rendered=JSON.parse((await execute(path.join(home,'gitjig'),['repo','summary','--resource',receipt.resourceId],{cwd:root,env,timeout:4000,maxBuffer:2**20})).stdout);assert.equal(rendered.body,receipt.summary.body);assert.equal(rendered.revisionId,receipt.summary.revisionId);assert.equal(rendered.publication,'not-prepared');assert.equal(f.calls,calls);if(process.env.GITJIG_INSTALLED_CONTRIBUTIONS_RECEIPT)await fs.writeFile(process.env.GITJIG_INSTALLED_CONTRIBUTIONS_RECEIPT,JSON.stringify({...receipt,root,publicOfflineExactBytes:true},null,2));t.diagnostic('Retained installed contributions '+root);
+});

@@ -1,0 +1,47 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {repositoryCommands} from '../../dist/ui/repository-commands.js';
+import {reconciliationFixture} from './publication-reconcile-fixture.mjs';
+import {resource} from '../contributions/fixture.mjs';
+const snapshot=c=>JSON.stringify(c.store.all("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").map(({name})=>[name,c.store.all('SELECT * FROM "'+name+'" ORDER BY rowid')]));
+function command(f,choices,inputs=[f.credential],extra={}){const shown=[],ui=repositoryCommands({controller:f.c,isCurrent:()=>true,choose:async(title,rows)=>{const next=choices.shift();if(typeof next==='function')return next(title,rows);if(next===undefined)return;const pick=rows.find(row=>row.startsWith(next));assert.ok(pick,'Missing '+next+' in '+JSON.stringify(rows));return pick;},input:async()=>{const next=inputs.shift();return typeof next==='function'?next():next;},show:async(title,text)=>shown.push({title,text}),notice(){},...extra});return {ui,shown,run:()=>ui.commands[0].run('',f.source)};}
+const choices=['Retained publications','owner/repo','Reconcile original publication','Reconcile original with read requests','Back','Close'];
+test('read-only reconciliation preserves original identity/payload/grants and transport uncertainty while consuming one original allowance',async t=>{
+    const f=await reconciliationFixture(t),before=f.c.inspectPublicationReconciliation(f.op.operationId),raw=f.c.store.one('SELECT data FROM effect_operations WHERE id=?',f.op.operationId).data,grants=f.c.store.all('SELECT * FROM effect_delegations'),posts=f.posts.length;
+    const h=command(f,[...choices]);assert.equal(await h.run(),'completed');await h.ui.close();const result=f.c.inspectPublication(f.op.operationId),after=f.c.inspectPublicationReconciliation(f.op.operationId);assert.equal(result.phase,'CONFIRMED');assert.equal(result.transportOutcome,'uncertain');assert.equal(result.observedOutcome,'resource-matches');assert.equal(result.operationId,f.op.operationId);assert.equal(result.payloadHash,JSON.parse(raw).payloadHash);assert.equal(after.execution.consumed,before.execution.consumed+1);assert.equal(after.execution.reserved,0);assert.equal(after.execution.limit,before.execution.limit);assert.deepEqual(f.c.store.all('SELECT * FROM effect_delegations'),grants);assert.equal(f.posts.length,posts);assert.ok(h.shown[0].text.includes('consumes the original'));assert.equal(f.c.store.one('SELECT COUNT(*) n FROM effect_operations').n,1);f.pass();
+});
+test('absent native resource remains UNKNOWN and cancelled historical work is not revived',async t=>{
+    for(const absent of [true,false]){const f=await reconciliationFixture(t);if(absent)f.comments.length=0;else await f.c.cancelWork({workId:f.op.workId,expectedEpoch:f.c.inspectWork(f.op.workId).epoch});const state=f.c.inspectWork(f.op.workId).state,posts=f.posts.length,h=command(f,[...choices]);await h.run();await h.ui.close();assert.equal(f.c.inspectPublication(f.op.operationId).phase,absent?'UNKNOWN':'CONFIRMED');assert.equal(f.c.inspectWork(f.op.workId).state,state);assert.equal(f.posts.length,posts);f.pass();}
+});
+test('cancel, source/operation/budget drift and exhausted allowance admit no native read or spend',async t=>{
+    const f=await reconciliationFixture(t),before=snapshot(f.c),calls=f.requests.length;
+    for(const [selected,inputs] of [[['Retained publications','owner/repo','Reconcile original publication','Back without reconciliation','Back','Close'],[]],[choices,[]]]){const h=command(f,[...selected],inputs);await h.run();await h.ui.close();assert.equal(snapshot(f.c),before);assert.equal(f.requests.length,calls);}
+    let current=true;const stale=command(f,choices.slice(0,3).concat([()=>{current=false;return 'Reconcile original with read requests';}]),[],{isCurrent:()=>current});await assert.rejects(stale.run(),/source changed/);await stale.ui.close();assert.equal(snapshot(f.c),before);
+    const raw=f.c.store.one('SELECT data FROM effect_operations WHERE id=?',f.op.operationId).data;
+    const changed=command(f,[...choices],[()=>{f.c.store.run("UPDATE effect_operations SET data=json_set(data,'$.blocked',json(?)) WHERE id=?",'["new original blocker"]',f.op.operationId);return f.credential;}]);await assert.rejects(changed.run(),/facts changed/);await changed.ui.close();assert.equal(f.requests.length,calls);f.c.store.run('UPDATE effect_operations SET data=? WHERE id=?',raw,f.op.operationId);assert.equal(snapshot(f.c),before);
+    const drift=command(f,[...choices],[()=>{f.c.store.run("UPDATE budgets SET consumed=consumed+1 WHERE lineage=? AND kind='execution'",f.op.workId);return f.credential;}]);await assert.rejects(drift.run(),/allowance or producer state changed/);await drift.ui.close();assert.equal(f.requests.length,calls);
+    f.c.store.run("UPDATE budgets SET consumed=lim WHERE lineage=? AND kind='execution'",f.op.workId);const exhausted=command(f,choices.slice(0,3));await assert.rejects(exhausted.run(),/allowance exhausted/);await exhausted.ui.close();assert.equal(f.requests.length,calls);f.pass();
+});
+test('an unsettled original producer holds both UI and controller reconciliation before allocation',async t=>{
+    const f=await reconciliationFixture(t);f.c.store.run('INSERT INTO runs VALUES(?,?,?,?,?,?,?,?)','controlled-pending',f.op.workId,1,1,'RUNNING',f.root,'reserved','{"kind":"publication-http"}');const before=snapshot(f.c),calls=f.requests.length,h=command(f,choices.slice(0,3));await assert.rejects(h.run(),/producer is unsettled/);await h.ui.close();await assert.rejects(f.c.reconcilePublication({operationId:f.op.operationId}),/producer is unsettled/);assert.equal(snapshot(f.c),before);assert.equal(f.requests.length,calls);f.c.store.run('DELETE FROM runs WHERE id=?','controlled-pending');f.pass();
+});
+
+test('interrupted reserved/quarantined producers and retained capacity holds refuse even for UNKNOWN work without reading or spending',async t=>{
+    const f=await reconciliationFixture(t);f.c.store.run('UPDATE works SET state=? WHERE id=?','UNKNOWN',f.op.workId);
+    const cases=[['INTERRUPTED','reserved','quarantined-unknown',null],['INTERRUPTED','consumed','quarantined-cleanup',null],['UNKNOWN','consumed','unknown',null],['INTERRUPTED','unknown','removed',null],['SETTLED','consumed','removed','QUARANTINED'],['SETTLED','consumed','removed','SETTLING'],['SETTLED','consumed','removed','UNKNOWN']];
+    for(const [phase,reservation,cleanup,capacity] of cases){
+        f.c.store.run('INSERT INTO runs VALUES(?,?,?,?,?,?,?,?)','controlled-hold',f.op.workId,1,1,phase,f.root,reservation,JSON.stringify({kind:'publication-http',cleanup}));
+        if(reservation==='reserved')f.c.store.run("UPDATE budgets SET reserved=reserved+1 WHERE lineage=? AND kind='execution'",f.op.workId);
+        if(capacity){const sequence=(f.c.store.one('SELECT MAX(sequence) AS n FROM capacity_leases').n??0)+1;f.c.store.run('INSERT INTO capacity_leases VALUES(?,?,?,?,?,?,?)','controlled-capacity',f.op.workId,'controlled-hold',1,sequence,capacity,'{}');}
+        assert.equal(f.c.inspectPublicationReconciliation(f.op.operationId).unsettled,true);const before=snapshot(f.c),calls=f.requests.length,h=command(f,choices.slice(0,3));await assert.rejects(h.run(),/producer is unsettled/);await h.ui.close();await assert.rejects(f.c.reconcilePublication({operationId:f.op.operationId}),/producer is unsettled/);assert.equal(snapshot(f.c),before);assert.equal(f.requests.length,calls);
+        if(capacity)f.c.store.run('DELETE FROM capacity_leases WHERE id=?','controlled-capacity');f.c.store.run('DELETE FROM runs WHERE id=?','controlled-hold');if(reservation==='reserved')f.c.store.run("UPDATE budgets SET reserved=reserved-1 WHERE lineage=? AND kind='execution'",f.op.workId);
+    }
+    assert.equal(f.c.inspectPublicationReconciliation(f.op.operationId).unsettled,false);const h=command(f,[...choices]);await h.run();await h.ui.close();assert.equal(f.c.inspectPublication(f.op.operationId).phase,'CONFIRMED');assert.equal(f.c.inspectWork(f.op.workId).state,'UNKNOWN');f.pass();
+});
+test('shared credential ownership excludes competing actions and close joins accepted native reads',async t=>{
+    const f=await reconciliationFixture(t);await f.c.trackRepositoryResource(resource(1));const held=f.holdRead(),h=command(f,[...choices]),task=h.run();void task.catch(()=>{});await held.entered;const posts=f.posts.length,calls=f.requests.length;
+    const other=command(f,['Tracked issues','github','Refresh selected']);await assert.rejects(other.run(),/owns the credential session/);await other.ui.close();assert.equal(f.requests.length,calls);await h.ui.close();await Promise.allSettled([task]);held.release();const context=f.c.inspectPublicationReconciliation(f.op.operationId);assert.equal(context.unsettled,false);assert.equal(context.execution.reserved,0);assert.equal(f.posts.length,posts);assert.equal(f.c.inspectPublication(f.op.operationId).phase,'UNKNOWN');f.pass();
+});
+test('late navigation preserves accepted original outcome without presenting it in another view',async t=>{
+    const f=await reconciliationFixture(t);let current=true;f.onRead(()=>{current=false;});const h=command(f,[...choices],[f.credential],{isCurrent:()=>current});await assert.rejects(h.run(),error=>error.message.includes(f.op.operationId));await h.ui.close();assert.equal(f.c.inspectPublication(f.op.operationId).phase,'CONFIRMED');assert.equal(h.shown.length,1);assert.equal(f.posts.length,1);f.pass();
+});

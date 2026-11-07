@@ -1,0 +1,23 @@
+# Project file context
+
+In a project conversation, write `@src/file.ts` to include a text file. Use a JSON-quoted path for spaces, for example `@"docs/설계 문서.txt"`. `@@name` sends a literal `@name`. An email address such as `a@example.com` stays literal. Complete paths with the editor's completion key. Directory completion navigates names; it does not attach every file in a directory.
+
+Gitjig reads files from the conversation's registered project. It also includes the root `AGENTS.md` if present. It does not search parent folders, nested instruction files or stock Pi context. File contents are contextual data. They cannot grant tools, delegation or permission to skip controller rules.
+
+Submission captures the file bytes before it enters the input queue. Later edits do not change that submitted input. Initial requests, steering and follow-up use the same captured-content builder. Execution uses a separate captured work copy; that copy does not replace the submitted context. Inspecting captured files does not prove that a model interpreted them correctly.
+
+Open `/session` to inspect up to eight recent captured inputs from this conversation, including older generations. Each record shows its input mode, handling state and relative file paths, including the root `AGENTS.md`. Long labels are marked as shortened. A notice identifies records or file rows omitted from the bounded view.
+
+A prepared comparison uses the recorded execution copy. `same` means the submitted bytes match that copy. `different` means they differ. `missing` means the file was absent from that valid execution capture. `not prepared` means no comparison was recorded. `unavailable` means Gitjig cannot validate the retained record. Input handling has a separate label: `consumed` means Pi observed the input; `superseded` means later owner direction replaced it. These labels preserve the recorded event, not the current contents of the project. Review, model correctness and action authority require their own evidence.
+
+The first profile accepts visible UTF-8 text files only. It refuses hidden paths, symlinks, hardlinks, directories, binary content and paths outside the registered project. Use at most 16 distinct files, including `AGENTS.md`, at most 256KiB per file and 1MiB in total. Path limits are 4096 UTF-16 units and 16 components. The input limit is 512KiB with at most 512 reference occurrences. Files are never truncated. An unsafe, unreadable or oversized `AGENTS.md` produces a refusal; it is not silently omitted.
+
+Completion reads names only. It examines at most 2048 entries in one directory, returns at most 50 suggestions and has a100ms cooperative work limit. Narrow the path or project when a bound is reached. A changed target or draft discards stale results. No home or current-directory fallback occurs when a project is missing.
+
+Selecting a completion replaces the whole file token under the cursor and keeps following text. For a quoted directory, the caret stays before the closing quote so you can continue the path. If more than 50 matching names are found, a notice asks you to narrow the path.
+
+If Pi is still accepting a previous asynchronous input, a new submission can report `Native input delivery is settling`. Retry after that operation finishes. Gitjig keeps the draft and does not admit the refused input. This short refusal prevents a late Pi enqueue from escaping a premature queue clear.
+
+The reader checks stable registered source and observed file identities. It does not claim atomic containment against a malicious operating-system user who swaps and restores parent directories. Agent writes remain in the separately controlled work copy. Private input artifacts retain source attribution and are verified again before delivery, including after restart. Images and recursive directory attachments are unsupported in this profile.
+
+If native queue ownership cannot be reconciled, gitjig retains `NATIVE_INPUT_RECOVERY_REQUIRED` on the original conversation. Inspect `conversation inspect`, `work inspect` for its retained work/run IDs, and `/session` for captured-input handling; readable native history remains available. Successful client/container cleanup and restart do not establish delivery or replayability and do not clear this requirement. Automatic semantic reconciliation is unavailable in this profile. Preserve the original conversation, inputs and obligations for operator investigation; creating another conversation does not recover or discard them. Unrelated healthy conversations remain usable. Private state editing is not a supported recovery command.

@@ -1,0 +1,4 @@
+import assert from 'node:assert/strict';
+import {repositoryCommands} from '../../dist/ui/repository-commands.js';
+export function readCommand(f,choices,inputs=[],extra={}){const shown=[],ui=repositoryCommands({controller:f.c,isCurrent:()=>true,choose:async(title,rows)=>{const next=choices.shift();if(typeof next==='function')return next(title,rows);if(next===undefined)return;const pick=rows.find(row=>row.startsWith(next));assert.ok(pick,'Missing '+next+' in '+JSON.stringify(rows));return pick;},input:async()=>inputs.shift(),show:async(title,text)=>shown.push({title,text}),notice(){},...extra});return {shown,ui,run:()=>ui.commands[0].run('',f.conversation)};}
+export const choices=['Retained integrations','local-git','Reconcile original integration','Reconcile original receiver','Back','Close'];

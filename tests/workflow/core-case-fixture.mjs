@@ -1,0 +1,20 @@
+// Explicit consumers for the original runtime regression subjects. No product oracle or auto coverage.
+const readDescriptor = `let descriptor;try{descriptor=JSON.parse(require('fs').readFileSync('/input/verification-cases.json','utf8'));}catch(error){if(error.code!=='ENOENT')throw error;}\n`;
+const wrap = (invoke, ordinary) => readDescriptor+`const cases=(descriptor?.cases??[]).map(c=>{let observed;try{observed={kind:'return',value:JSON.stringify((${invoke})(JSON.parse(c.declaration.input.literalUtf8)))}}catch(error){observed={kind:'rejection',value:error.message}}return{id:c.id,inputDigest:c.inputDigest,observed}});\n`+ordinary;
+export const dedupChecker = wrap("value=>require('./consumer.cjs').run(value)", `const {run}=require('./consumer.cjs'),a=run(['a','a']),b=run(['a','b']);console.log(JSON.stringify({version:1,cases,assertions:[{id:'once',passed:a.length===1,actual:String(a.length)},{id:'distinct',passed:b.length===2,actual:String(b.length)}]}));\n`);
+export const weakChecker = wrap("value=>require('./consumer.cjs').run(value)", `const {run}=require('./consumer.cjs');console.log(JSON.stringify({version:1,cases,assertions:[{id:'distinct',passed:run(['a','b']).length===2}]}));\n`);
+export const smokeChecker = wrap("value=>require('./consumer.cjs').run(value)", `console.log(JSON.stringify({version:1,cases,assertions:[{id:'smoke',passed:true}]}));\n`);
+const parseFence = "text=>{const fence=text.match(/```json\\n([\\s\\S]*?)\\n```/);if(!fence)throw Error('missing fence');return JSON.parse(fence[1]);}";
+export const extractChecker = wrap(parseFence, `const parsed=(${parseFence})(require('fs').readFileSync('notes.md','utf8'));console.log(JSON.stringify({version:1,cases,assertions:[{id:'fence',passed:parsed.key==='value'}]}));\n`);
+export const guardChecker = wrap("request=>{delete require.cache[require.resolve('./routes.cjs')];const fresh=require('./routes.cjs');require('./guard.cjs')(fresh);return fresh.invoke(request)}", `delete require.cache[require.resolve('./routes.cjs')];const router=require('./routes.cjs');require('./guard.cjs')(router);const forbidden=router.invoke({kind:'forbidden'}),ordinary=router.invoke({kind:'ordinary'});console.log(JSON.stringify({version:1,cases,assertions:[{id:'forbidden',passed:forbidden.denied&&forbidden.effects===0,actual:JSON.stringify(forbidden)},{id:'ordinary',passed:!ordinary.denied&&ordinary.effects===1,actual:JSON.stringify(ordinary)}]}));\n`);
+function declaration(id,kind,consumerPaths,input,expected,rejection=false){return{id,kind,guaranteeIds:['R1'],derivation:'Invoke the actual declared regression consumer with this named boundary input',consumerPaths,input:{literalUtf8:JSON.stringify(input),fixturePaths:[]},expected:{kind:rejection?'rejection':'return',value:rejection?expected:JSON.stringify(expected)}};}
+export function coreCases(kind,flags){
+ if(flags.guard)return[declaration('ordinary-route','healthy',['guard.cjs','routes.cjs'],{kind:'ordinary'},{denied:false,effects:1}),declaration('forbidden-route','adverse',['guard.cjs','routes.cjs'],{kind:'forbidden'},{denied:true,effects:0})];
+ if(kind==='nit')return[declaration('valid-fence','healthy',['extract.cjs'],'```json\n{"key":"value"}\n```',{key:'value'}),declaration('missing-fence','adverse',['extract.cjs'],'plain prose','missing fence',true)];
+ // The weak/reproduction scenarios deliberately omit duplicate sensitivity so the
+ // original independent author's/reviewer's finding remains the decisive guard.
+ // They still execute their actual declared ordinary and empty-boundary cases.
+ return[declaration('distinct-ids','healthy',['consumer.cjs'],['a','b'],['a','b']),flags.weakCheck||flags.reproduction?declaration('empty-boundary','adverse',['consumer.cjs'],[],[]):declaration('duplicate-id','adverse',['consumer.cjs'],['a','a'],['a'])];
+}
+const quote = value => "'"+value.replaceAll("'","'\"'\"'")+"'";
+export const unrelatedGreenCommand = 'node -e '+quote(wrap("value=>require('./consumer.cjs').run(value)","console.log(JSON.stringify({version:1,cases,assertions:[{id:'once',passed:true},{id:'distinct',passed:true}]}));"));
