@@ -1,0 +1,92 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import net from 'node:net';
+import { ModelRuntime } from '@earendil-works/pi-coding-agent';
+import { InMemoryModelsStore } from '@earendil-works/pi-ai';
+import { openController } from '../../dist/controller/index.js';
+import { ApplicationAccounts } from '../../dist/app/accounts.js';
+import { resolveManagedModel, createOwnedManagedProvider, managedModelEvidence } from '../../dist/pi/managed-provider.js';
+import { modelConfigurationIdentity } from '../../dist/pi/model-identity.js';
+import { selectedHeaders } from '../../dist/pi/native-provider.js';
+import { sdkMetadataHeaders } from '../../dist/pi/sdk-metadata.js';
+import { initializeApplicationEnvironment } from '../../dist/app/environment.js';
+import { wireResponse } from '../pi/provider-wire-fixture.mjs';
+
+const root = process.argv[2], home = path.join(root, 'app'), stock = path.join(process.env.PI_CODING_AGENT_DIR, 'settings.json');
+process.env.PI_TELEMETRY = '1'; initializeApplicationEnvironment();
+assert.equal(process.env.PI_TELEMETRY, undefined);
+await assert.rejects(selectedHeaders({ transformHeaders: async headers => ({ ...headers, Authorization: 'DUMMY_SUBSTITUTE' }) }, sdkMetadataHeaders).transformHeaders({}), /original Pi authentication headers/);
+await fs.writeFile(stock, '{"defaultModel":"WRONG_STOCK_MODEL"}', { mode: 0o600 });
+net.Socket.prototype.connect = function () { throw Error('No socket connection in managed codec fixture'); };
+const requests = [];
+globalThis.fetch = async (url, options) => {
+    assert.ok(requests.length < 4, 'Four-dispatch ceiling');
+    const body = JSON.parse(options.body), headers = new Headers(options.headers);
+    requests.push({ url: String(url), body, headers });
+    const api = String(url).endsWith('/responses') ? 'openai-responses' : 'openai-completions';
+    return wireResponse(api, body.model, { text: 'SYNTHETIC managed response ' + body.model });
+};
+let controller = await openController({ installationHome: home }), accounts = ApplicationAccounts.open(controller);
+const config = { providers: { 'owned-managed': { api: 'openai-completions', baseUrl: 'http://127.0.0.1:9/v1', apiKey: 'DUMMY_CONFIG_SECRET', headers: { 'x-managed-token': 'DUMMY_HEADER_SECRET' },
+    models: [{ id: 'alpha', reasoning: true, contextWindow: 8192, maxTokens: 256, compat: { supportsReasoningEffort: true } }, { id: 'beta', baseUrl: 'https://opencode.ai/owned/v1', reasoning: false, contextWindow: 8192, maxTokens: 256 }] } } };
+let alpha, beta, first, alphaView;
+try {
+    await accounts.configure(config);
+    await accounts.login('openrouter', 'api_key', { prompt: async () => 'DUMMY_STORED_SECRET', notify() {} });
+    process.env.TMPDIR = path.join(home, 'artifacts');
+    alpha = { provider: 'owned-managed', modelId: 'alpha', managed: await resolveManagedModel(home, 'owned-managed', 'alpha', 'high') };
+    beta = { provider: 'owned-managed', modelId: 'beta', managed: await resolveManagedModel(home, 'owned-managed', 'beta', 'high') };
+    assert.equal(alpha.managed.thinkingLevel, 'high'); assert.equal(beta.managed.thinkingLevel, 'off');
+    const a = controller.createConversation(), b = controller.createConversation();
+    await controller.queueConversationInput({ conversationId: a.conversationId, expectedGeneration: 0, text: 'Alpha retained history', mode: 'idle' });
+    await controller.queueConversationInput({ conversationId: b.conversationId, expectedGeneration: 0, text: 'Beta separate history', mode: 'idle' });
+    const mutable = structuredClone(alpha), running = controller.runConversation({ conversationId: a.conversationId, model: mutable });
+    mutable.modelId = 'beta'; mutable.managed.home = path.join(root, 'WRONG');
+    const outcomes = await Promise.all([running, controller.runConversation({ conversationId: b.conversationId, model: beta })]);
+    for (const result of outcomes) assert.equal(result.status, 'delivered', JSON.stringify(result));
+    const actualAlpha = requests.find(request => request.body.model === 'alpha'), actualBeta = requests.find(request => request.body.model === 'beta');
+    assert.ok(actualAlpha && actualBeta); assert.equal(actualAlpha.body.reasoning_effort, 'high'); assert.equal(actualBeta.body.reasoning_effort, undefined);
+    assert.ok(actualBeta.headers.get('x-opencode-session')); assert.equal(actualBeta.headers.get('x-opencode-client'), 'pi');
+    for (const request of requests) { assert.equal(request.headers.get('authorization'), 'Bearer DUMMY_CONFIG_SECRET'); assert.equal(request.headers.get('x-managed-token'), 'DUMMY_HEADER_SECRET'); }
+    alphaView = controller.inspectConversation(a.conversationId); first = outcomes[0];
+    assert.equal(controller.getNativeHandle(a.conversationId), null);
+    assert.match(await fs.readFile(alphaView.historyRef, 'utf8'), /Alpha retained history/);
+    const evidence = controller.store.all('SELECT data FROM observations').map(row => JSON.parse(row.data)).filter(row => row.type === 'resolved-model');
+    assert.equal(evidence.length, 2); assert.equal(evidence.find(row => row.model.modelId === 'alpha').model.thinkingLevel, 'high');
+    const serialized = JSON.stringify({ runs: controller.store.all('SELECT data FROM runs'), evidence, identity: modelConfigurationIdentity(alpha) });
+    for (const secret of ['DUMMY_CONFIG_SECRET', 'DUMMY_HEADER_SECRET', 'DUMMY_STORED_SECRET', alpha.managed.configDigest, alpha.managed.modelDigest]) assert.ok(!serialized.includes(secret), 'No secret/private integrity hash in model/run evidence');
+    const safe = managedModelEvidence({ provider: 'x', id: 'y', api: 'openai-completions', baseUrl: 'https://user:password@example.test/path?token=DUMMY_QUERY#fragment', reasoning: false, input: ['text'], contextWindow: 100, maxTokens: 10 }, 'off', 1);
+    assert.equal(safe.endpoint, 'https://example.test/path');
+} finally { await controller.close(); }
+controller = await openController({ installationHome: home }); accounts = ApplicationAccounts.open(controller);
+try {
+    const freshAlpha = { ...alpha, managed: await resolveManagedModel(home, alpha.provider, alpha.modelId, 'high') };
+    await controller.queueConversationInput({ conversationId: alphaView.conversationId, expectedGeneration: alphaView.generation, text: 'Alpha reopened history', mode: 'idle' });
+    const resumed = await controller.runConversation({ conversationId: alphaView.conversationId, model: freshAlpha });
+    assert.equal(resumed.status, 'delivered', JSON.stringify(resumed)); assert.notEqual(resumed.runId, first.runId);
+    const after = controller.inspectConversation(alphaView.conversationId);
+    assert.equal(after.nativeSessionId, alphaView.nativeSessionId); assert.equal(after.historyRef, alphaView.historyRef);
+    assert.match(await fs.readFile(after.historyRef, 'utf8'), /Alpha reopened history/);
+    const catalogue = await ModelRuntime.create({ authPath: path.join(home, 'config/auth.json'), modelsPath: path.join(home, 'config/models.json'), modelsStore: new InMemoryModelsStore(), refreshOnCreate: false });
+    const original = catalogue.getModels('openrouter').find(model => model.api === 'openai-completions'); assert.ok(original);
+    const builtin = { provider: original.provider, modelId: original.id, managed: await resolveManagedModel(home, original.provider, original.id) };
+    const c = controller.createConversation();
+    await controller.queueConversationInput({ conversationId: c.conversationId, expectedGeneration: 0, text: 'Original catalogue codec', mode: 'idle' });
+    assert.equal((await controller.runConversation({ conversationId: c.conversationId, model: builtin })).status, 'delivered');
+    assert.equal(requests.at(-1).headers.get('authorization'), 'Bearer DUMMY_STORED_SECRET');
+    assert.equal(requests.at(-1).headers.get('http-referer'), null); assert.equal(requests.at(-1).headers.get('x-openrouter-title'), null);
+    await accounts.logout('openrouter');
+    await assert.rejects(createOwnedManagedProvider(builtin.provider, builtin.modelId, builtin.managed), /missing|changed/);
+    await accounts.login('openrouter', 'api_key', { prompt: async () => 'DUMMY_REPLACEMENT_SECRET', notify() {} });
+    await assert.rejects(createOwnedManagedProvider(builtin.provider, builtin.modelId, builtin.managed), /changed/);
+    const fresh = await resolveManagedModel(home, builtin.provider, builtin.modelId);
+    assert.ok(fresh.authEpoch > builtin.managed.authEpoch);
+    const owner = await createOwnedManagedProvider(builtin.provider, builtin.modelId, fresh); await owner.close();
+    const before = requests.length;
+    const changed = structuredClone(config); changed.providers['owned-managed'].baseUrl = 'http://127.0.0.1:9/changed'; await accounts.configure(changed);
+    await assert.rejects(createOwnedManagedProvider(alpha.provider, alpha.modelId, alpha.managed), /changed/);
+    assert.equal(requests.length, before);
+} finally { await controller.close(); }
+assert.equal(await fs.readFile(stock, 'utf8'), '{"defaultModel":"WRONG_STOCK_MODEL"}');
+console.log(JSON.stringify({ outcome: 'passed', syntheticDispatches: requests.length, services: 0, helpers: 0, originalCodecs: true }));

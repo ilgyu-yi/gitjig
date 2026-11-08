@@ -1,0 +1,8 @@
+import assert from 'node:assert/strict';
+import path from 'node:path';
+import {hostedReadWorld} from './integration-hosted-read-fixture.mjs';
+import {execute} from './integration-read-fixture.mjs';
+export async function hostedPreparedSendWorld(t){
+ const f=await hostedReadWorld(t,{normalNative:true}),clientRoot=path.join(f.home,'effects',f.op.operationId,'client'),target=JSON.parse(f.c.store.one('SELECT data FROM effect_targets WHERE id=?',f.op.targetId).data),client=await f.c.effects.client(clientRoot,false,true);await client.fetchHttpsBasis(target.target,f.native.B);await client.close();const authority=await f.c.effects.hostedSession.observe(target,'ordinary',f.native.B),command=args=>execute(f.git,['--git-dir='+path.join(clientRoot,'client.git'),...args],{env:f.env}),tree=(await command(['rev-parse',f.native.B+'^{tree}'])).stdout.trim(),integration=(await command(['commit-tree',tree,'-p',f.native.B,'-m','Owned Gitjig integration\nOperation: '+f.op.operationId])).stdout.trim();
+ f.c.store.run("UPDATE effect_operations SET phase='RESERVED',data=json_set(json_remove(data,'$.dispatchRun'),'$.expectedBase',?,'$.headCommit',?,'$.integrationCommit',?,'$.clientRoot',?,'$.clientInitialized',json('true'),'$.authority',json(?)) WHERE id=?",f.native.B,integration,integration,clientRoot,JSON.stringify(authority),f.op.operationId);const evidence=JSON.parse(f.c.store.one('SELECT data FROM effect_operations WHERE id=?',f.op.operationId).data).evidence;f.c.changeCore.assertCurrentEvidence=value=>assert.deepEqual(value,evidence);f.conversation=f.c.createConversation().conversationId;return {...f,integration};
+}
