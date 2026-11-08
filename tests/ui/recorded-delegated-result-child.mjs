@@ -1,0 +1,23 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import {recordedResultWorld} from '../controller/recorded-delegated-results-fixture.mjs';
+import {startConversationUI} from '../../dist/ui/index.js';
+const config=JSON.parse(fs.readFileSync(process.argv[2],'utf8'));
+test('owner sees original recorded partial work beside misleading parent prose',async t=>{
+ const f=await recordedResultWorld(t,{retainRoot:true}),child=f.children[0];
+ f.c.setConversationLanguage({conversationId:f.parent,expectedGeneration:f.c.inspectConversation(f.parent).generation,expectedRevision:0,replyLanguage:config.locale});
+ if(config.openNotice)f.c.setConversationLanguage({conversationId:child.conversationId,expectedGeneration:f.c.inspectConversation(child.conversationId).generation,expectedRevision:0,replyLanguage:config.locale});
+ f.c.setDraft({conversationId:f.parent,expectedRevision:0,text:'Retained 한글 draft'});
+ const counts=()=>Object.fromEntries(['runs','conversation_inputs','conversation_results','conversation_notifications'].map(table=>[table,f.c.store.one('SELECT COUNT(*) AS n FROM '+table).n]));
+ const before=counts(),recorded=f.c.inspectRecordedDelegatedResults(f.parent);
+ assert.equal(recorded.entries.length,1);assert.ok(recorded.entries[0].candidateVersion);
+ fs.writeFileSync(config.ready,JSON.stringify({parent:f.parent,target:child.conversationId,work:child.workId,assignment:child.assignmentId}));
+ await import('./navigation-no-execution.mjs');
+ await startConversationUI({controller:f.c,model:f.model,conversationId:f.parent});
+ assert.equal(f.c.inspectConversation(f.parent).draft.text,'Retained 한글 draft');assert.deepEqual(counts(),before);assert.deepEqual(f.c.inspectRecordedDelegatedResults(f.parent),recorded);
+ const openedNotice=f.c.inspectNotifications(f.parent).some(notice=>notice.resultId===recorded.entries[0].resultId&&notice.state==='ACKNOWLEDGED');
+ assert.equal(openedNotice,config.openNotice);
+ if(openedNotice)assert.equal(f.c.store.one('SELECT selected FROM interaction_view').selected,child.conversationId);
+ fs.writeFileSync(config.receipt,JSON.stringify({noAdditionalWork:true,recordedUnchanged:true,draft:'Retained 한글 draft',openedNotice}));f.pass();
+});

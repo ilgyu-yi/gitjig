@@ -1,0 +1,36 @@
+import test from 'node:test';import assert from 'node:assert/strict';import fs from 'node:fs/promises';import path from 'node:path';import os from 'node:os';
+import {openController} from '../../dist/controller/index.js';
+import {configureOwnedRepositoryConfigurationFixture} from '../../.qualification/controller-testing.js';
+import {configurationServer,configurationTarget,configurationProfile} from './configuration-fixture.mjs';
+for(const mode of ['healthy','close-held'])test('owner-only Controller configuration preview '+mode+' keeps actual null-project plan/source/budget and addressable recovery',{timeout:5000},async()=>{const f=await configurationServer(),root=await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(),'gitjig-config-preview-'))),home=path.join(root,'home');let c=await openController({installationHome:home}),passed=false;try{const target=c.registerRepositoryConfigurationTarget({target:configurationTarget});configureOwnedRepositoryConfigurationFixture(c,{origin:f.origin,token:'fixture-original'});const hold=mode==='close-held'?f.holdNext():null;const pending=c.previewRepositoryConfiguration({targetId:target.targetId,profile:configurationProfile()});if(hold){await hold.entered;await c.close();hold.release();}const view=await pending;assert.ok(view.workId&&view.planId);if(!hold){assert.equal(view.phase,'PREVIEWED',JSON.stringify(view));assert.equal(view.plan.steps.length,2);assert.equal(view.steps.length,2);assert.equal(view.plan.steps[0].payload.name,'gitjig/team-default/'+view.planId);assert.ok(f.requests.every(r=>r.method==='GET'));await c.close();}c=await openController({installationHome:home});const reopened=c.inspectRepositoryConfiguration(view.planId);assert.equal(reopened.workId,view.workId);assert.equal(c.store.one('SELECT project FROM works WHERE id=?',view.workId).project,null);assert.equal(c.store.one('SELECT COUNT(*) AS n FROM projects').n,0);assert.equal(c.inspectWork(view.workId).allowance.reserved,0);assert.equal(c.inspectWork(view.workId).allowance.consumed,1);assert.ok(!JSON.stringify(c.store.all('SELECT data FROM effect_operations')).includes('fixture-original'));if(hold){assert.ok(['CANCELLED','REFUSED'].includes(reopened.phase));assert.ok(reopened.blocked.length);}const counts=()=>['works','effect_operations','effect_delegations','sources'].map(t=>c.store.one('SELECT COUNT(*) AS n FROM '+t).n),before=counts();assert.throws(()=>c.previewRepositoryConfiguration({targetId:target.targetId,profile:{version:'bad',mergeMethods:{merge:'true'}}}));assert.deepEqual(counts(),before);passed=true;}finally{await c.close();await f.close();if(passed)await fs.rm(root,{recursive:true,force:true});else console.error('Retained configuration preview '+root);}});
+test('preview stop preserves admitted original and allows its explicit next revision', {timeout:5000}, async t=>{
+ const fixture=await configurationServer();
+ const root=await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(),'gitjig-config-preview-stop-')));
+ const c=await openController({installationHome:path.join(root,'home')});
+ t.after(async()=>{await c.close();await fixture.close();await fs.rm(root,{recursive:true,force:true});});
+ const target=c.registerRepositoryConfigurationTarget({target:configurationTarget}),profile=configurationProfile();
+ configureOwnedRepositoryConfigurationFixture(c,{origin:fixture.origin,token:'fixture-original'});
+ const reason=Error('Owner stopped the settings preview'),before=fixture.requests.length;
+ await assert.rejects(async()=>c.previewRepositoryConfiguration({targetId:target.targetId,profile,signal:AbortSignal.abort(reason)}),error=>error===reason);
+ assert.equal(c.store.one('SELECT COUNT(*) n FROM works').n,0);
+ assert.equal(fixture.requests.length,before);
+ const hold=fixture.holdNext('/user','GET'),stop=new AbortController();
+ const pending=c.previewRepositoryConfiguration({targetId:target.targetId,profile,signal:stop.signal});
+ await hold.entered;
+ let stopped;
+ try {stop.abort(reason);stopped=await pending;} finally {hold.release();}
+ assert.equal(stopped.phase,'REFUSED');
+ assert.equal(stopped.plan,null);
+ assert.match(stopped.blocked.join(),/Owner stopped the settings preview/);
+ assert.equal(stopped.revision,1);
+ assert.equal(c.inspectWork(stopped.workId).state,'ACTIVE');
+ assert.deepEqual({...c.inspectWork(stopped.workId).allowance},{limit:8,consumed:1,reserved:0});
+ assert.deepEqual(fixture.requests.slice(before).map(({method,path})=>[method,path]),[['GET','/user']]);
+ assert.equal(c.store.one('SELECT COUNT(*) n FROM effect_receipts').n,0);
+ const resumed=await c.previewRepositoryConfiguration({targetId:target.targetId,profile,continuationPlanId:stopped.planId});
+ assert.deepEqual([resumed.planId,resumed.workId,resumed.phase,resumed.revision],[stopped.planId,stopped.workId,'PREVIEWED',2]);
+ assert.deepEqual({...c.inspectWork(stopped.workId).allowance},{limit:8,consumed:2,reserved:0});
+ assert.equal(c.store.one('SELECT COUNT(*) n FROM effect_operations').n,1);
+ assert.equal(c.store.one('SELECT COUNT(*) n FROM effect_delegations').n,1);
+ assert.ok(fixture.requests.every(request=>request.method==='GET'));
+});

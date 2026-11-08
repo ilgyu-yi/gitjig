@@ -1,0 +1,8 @@
+import {openController} from '../../dist/controller/index.js';
+import {configureOwnedHostedIntegrationFixture,configureOwnedNormalHostedIntegrationFixture} from '../../.qualification/controller-testing.js';
+import {scripted} from './effect-fixture.mjs';
+process.once('message',async input=>{try{
+ const c=await openController(input.controller);(input.normal?configureOwnedNormalHostedIntegrationFixture:configureOwnedHostedIntegrationFixture)(c,input.fixture);const model=scripted();const w=await c.beginChange({projectId:'P',request:'Export3; publish only agent delta, keep user local edit local',executionLimit:80,resolutionLimit:24});const ready=await c.driveChange({workId:w.workId,model});if(!ready.reviewReady)throw Error(JSON.stringify(ready.blocked));c.delegateHostedIntegration({workId:w.workId,targetId:input.targetId,mode:'ordinary',operationLimit:2});const p=await c.prepareIntegration({workId:w.workId,targetId:input.targetId,model});if(p.phase!=='RESERVED')throw Error(JSON.stringify(p));process.send({phase:'prepared',workId:w.workId,operationId:p.operationId,I:p.integrationCommit});
+ const open=c.effects.client.bind(c.effects);c.effects.client=async(...args)=>{const client=await open(...args),spawn=client.spawnPreparedHttpsForwardSend.bind(client);client.spawnPreparedHttpsForwardSend=handle=>{if(input.cut==='before-launcher')process.kill(process.pid,'SIGKILL');const result=spawn(handle);process.send({phase:'launched'});return result;};return client;};
+ process.once('message',async message=>{if(message==='go'){const result=await c.dispatchIntegration({operationId:p.operationId});process.send({phase:'returned',result});await c.close();}});
+ }catch(e){process.send({phase:'error',error:String(e)});process.exitCode=1;process.disconnect();}});

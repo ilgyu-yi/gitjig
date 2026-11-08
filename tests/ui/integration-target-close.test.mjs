@@ -1,0 +1,20 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import fsSync from 'node:fs';
+import cp from 'node:child_process';
+import {syncBuiltinESMExports} from 'node:module';
+import path from 'node:path';
+import {DatabaseSync} from 'node:sqlite';
+import {targetWorld} from './integration-target-fixture.mjs';
+import {waitFile} from './integration-send-fixture.mjs';
+const quote=value=>"'"+value.replaceAll("'","'\\''")+"'";
+for(const unknown of [false,true])test('controller close cleanup unknown='+unknown+' aborts and joins actual factory initialization with no target admission',{timeout:12000},async t=>{const f=await targetWorld(t),binary=path.join(f.root,'held-initializer'),marker=binary+'.entered',pids=binary+'.pids';await fs.writeFile(binary,'#!/bin/sh\nfor arg do\n if [ "$arg" = --version ]; then\n  '+quote(process.execPath)+' -e '+quote('setInterval(()=>{},1000)')+' &\n  child=$!\n  printf "%s %s\\n" "$$" "$child" > '+quote(pids)+'\n  printf entered > '+quote(marker)+'\n  wait\n  exit $?\n fi\ndone\nexec '+quote(f.git)+' "$@"\n',{mode:0o700});const task=f.c.registerLocalTarget(f.request,{gitProfile:{gitBinary:binary,commandTimeoutMs:8000}});void task.catch(()=>{});await waitFile(marker);const started=Date.now(),open=fsSync.openSync;if(unknown)fsSync.openSync=(file,...args)=>{if(String(file).includes('/effects/registration-')&&String(file).endsWith('/terminal.json')){const error=Error('Owned fixture denies cleanup observation');error.code='EPERM';throw error;}return open(file,...args);};try{if(unknown)await assert.rejects(f.c.close(),error=>error.code==='INTEGRATION_REGISTRATION_CLEANUP_UNKNOWN'&&error.recovery.includes('/effects/registration-'));else await f.c.close();await assert.rejects(task,error=>{assert.match(error.message,unknown?/initialization cleanup UNKNOWN/:/registration initialization unavailable at original client .*registration-/);assert.match(error.message,/no target committed/);return true;});}finally{fsSync.openSync=open;if(unknown)f.c.close=async()=>{};}assert.ok(Date.now()-started<3000,'Close must abort initialization instead of waiting for8s command timeout');const ids=/^([1-9][0-9]*) ([1-9][0-9]*)\n$/.exec(await fs.readFile(pids,'utf8'));assert.ok(ids);for(const pid of ids.slice(1))assert.throws(()=>process.kill(Number(pid),0),error=>error.code==='ESRCH');assert.throws(()=>process.kill(-Number(ids[1]),0),error=>error.code==='ESRCH');const db=new DatabaseSync(path.join(f.home,'state/controller.sqlite'),{readOnly:true});try{assert.equal(db.prepare('SELECT COUNT(*) n FROM effect_targets').get().n,1);assert.equal(db.prepare('SELECT COUNT(*) n FROM works').get().n,0);}finally{db.close();}f.pass();});
+
+test('cancellation during native trust creates no cleanup owner or sticky hold and permits a fresh explicit registration',async t=>{
+ const f=await targetWorld(t),realpath=fs.realpath,abort=new AbortController();let clientRoot,launches=0;const spawn=cp.spawn;cp.spawn=(...args)=>{launches++;return spawn(...args);};syncBuiltinESMExports();
+ fs.realpath=async(file,...args)=>{if(String(file).includes('/effects/registration-')&&String(file).endsWith('/client')){clientRoot=String(file);try{return await realpath(file,...args);}finally{abort.abort(Error('Owner cancelled during native trust'));}}return realpath(file,...args);};
+ try{await assert.rejects(f.c.registerLocalTarget(f.request,{signal:abort.signal}),error=>{assert.notEqual(error.code,'INTEGRATION_REGISTRATION_CLEANUP_UNKNOWN');assert.match(error.message,/Owner cancelled during native trust/);return true;});}finally{fs.realpath=realpath;cp.spawn=spawn;syncBuiltinESMExports();}
+ assert.equal(launches,0);assert.ok(clientRoot);await assert.rejects(fs.access(clientRoot),{code:'ENOENT'});assert.equal(f.c.listIntegrationTargets().targets.length,1);
+ const result=await f.c.registerLocalTarget(f.request);assert.equal(f.c.inspectIntegrationTarget(result.targetId).state,'RETAINED');assert.equal(f.c.store.one('SELECT COUNT(*) n FROM works').n,0);f.pass();
+});

@@ -1,0 +1,10 @@
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { openController } from '../../dist/controller/index.js';
+import { selectControllerModel } from '../../dist/cli/selected-model.js';
+const cfg = JSON.parse(await fs.readFile(process.argv[2], 'utf8'));
+const c = await openController({ installationHome: cfg.home }); process.env.TMPDIR = path.join(cfg.home, 'artifacts');
+const conversation = c.createConversation(), goal = c.createGoal({ conversationId: conversation.conversationId, objective: 'Retain intent through a process crash', criteria: ['Attempt and spend are retained'] });
+globalThis.fetch = async () => { await fs.writeFile(cfg.entered, JSON.stringify(c.inspectGoal(goal.goalId))); return new Promise(() => {}); };
+c.startGoal({ goalId: goal.goalId, expectedRevision: goal.revision, model: await selectControllerModel(cfg.profile, c) });
+setInterval(() => {}, 1000);
