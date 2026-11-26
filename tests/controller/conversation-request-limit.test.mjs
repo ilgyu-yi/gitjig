@@ -11,17 +11,25 @@ const tables=['works','runs','budgets','conversation_inputs','conversation_resul
 const snapshot=c=>JSON.stringify(Object.fromEntries(tables.map(name=>[name,c.store.all('SELECT * FROM '+name+' ORDER BY rowid')])));
 let sharedRoot,allPassed=true;const previousTmp=process.env.TMPDIR;
 after(async()=>{if(previousTmp===undefined)delete process.env.TMPDIR;else process.env.TMPDIR=previousTmp;if(sharedRoot&&allPassed)await fs.rm(sharedRoot,{recursive:true,force:true});});
-async function world(t){
- sharedRoot??=await temporaryDirectory('conversation-request-limit');const root=sharedRoot,home=path.join(root,'home');let c=await openController({installationHome:home}),passed=false;
+async function world(t,{maxProviderRequests}={maxProviderRequests:16}){
+ sharedRoot??=await temporaryDirectory('conversation-request-limit');const root=sharedRoot,home=path.join(root,'home');let c=await openController({installationHome:home,maxProviderRequests}),passed=false;
  process.env.TMPDIR=path.join(home,'artifacts');const cid=c.createConversation().conversationId;
  t.after(async()=>{await c.close();if(!passed){allPassed=false;t.diagnostic('Retained request-limit world '+root);}});
- return{get c(){return c;},cid,home,async reopen(){await c.close();c=await openController({installationHome:home});},pass(){passed=true;},async run(next,options={}){
+ return{get c(){return c;},cid,home,async reopen(limit=maxProviderRequests){await c.close();c=await openController({installationHome:home,maxProviderRequests:limit});},pass(){passed=true;},async run(next,options={}){
   const v=c.inspectConversation(cid);const {captureText,...runOptions}=options;const queued=await (captureText?c.queueConversationInputWithContext({conversationId:cid,expectedGeneration:v.generation,text:captureText,mode:'idle'}):c.queueConversationInput({conversationId:cid,expectedGeneration:v.generation,text:'원래 요청을 보존하고 현재 대화 상태를 확인하세요.',mode:'idle'}));let calls=0;
   const model=scripted((context,turn)=>{calls++;return next(context,turn);});model.provider='request-limit-'+randomUUID();model.definition.api='request-limit-api-'+randomUUID();
   const result=await c.runConversation({conversationId:cid,model,...runOptions});return{result,queued,calls};
  }};
 }
 const repeat=()=>({tool:{name:'conversation_status',arguments:{}}});
+test('the default ordinary limit permits a response to finish beyond the former ceiling',async t=>{
+ const saved=process.env.GITJIG_MAX_PROVIDER_REQUESTS;
+ delete process.env.GITJIG_MAX_PROVIDER_REQUESTS;
+ let f;
+ try{f=await world(t,{});}finally{if(saved!==undefined)process.env.GITJIG_MAX_PROVIDER_REQUESTS=saved;}
+ const {result,calls}=await f.run((_context,turn)=>turn<17?repeat():{text:'Response completed after 17 tool requests.'});
+ assert.equal(calls,18);assert.equal(result.status,'delivered');assert.equal(result.requestLimit,undefined);f.pass();
+});
 test('exact ordinary request ceiling preserves a typed host fact and cold current-result inspection',async t=>{
  const f=await world(t),{result,queued,calls}=await f.run(repeat);
  assert.equal(calls,16);assert.equal(result.status,'unavailable');assert.deepEqual(result.requestLimit,{limit:16});assert.equal(result.answer,undefined);
@@ -29,7 +37,7 @@ test('exact ordinary request ceiling preserves a typed host fact and cold curren
  assert.equal(f.c.store.one('SELECT state FROM conversation_inputs WHERE id=?',queued.inputId).state,'CONSUMED');
  assert.equal(f.c.store.one('SELECT consumed FROM budgets WHERE lineage=? AND kind=?',result.workId,'execution').consumed,1);
  const before=snapshot(f.c),view=f.c.inspectConversationRequestFailure(f.cid);assert.ok(view);assert.equal(view.runId,result.runId);assert.equal(view.workId,result.workId);assert.equal(view.limit,16);assert.equal(view.cleanup,result.cleanup);assert.equal(snapshot(f.c),before);
- await f.reopen();const reopened=snapshot(f.c);assert.deepEqual(f.c.inspectConversationRequestFailure(f.cid),view);assert.equal(snapshot(f.c),reopened);f.pass();
+ await f.reopen(32);const reopened=snapshot(f.c);assert.deepEqual(f.c.inspectConversationRequestFailure(f.cid),view);assert.equal(snapshot(f.c),reopened);f.pass();
 });
 test('new pending owner input and a later successful response supersede the current limit diagnostic',async t=>{
  const f=await world(t);await f.run(repeat);assert.ok(f.c.inspectConversationRequestFailure(f.cid));
@@ -43,7 +51,7 @@ test('provider prose imitating the ceiling does not create a host limit observat
  assert.equal(result.status,'delivered');assert.equal(result.requestLimit,undefined);assert.equal(f.c.inspectConversationRequestFailure(f.cid),null);f.pass();
 });
 test('a provider error imitating the limit remains an unclassified provider failure',async t=>{
- const f=await world(t),{result}=await f.run(()=>{throw Error('Conversation response reached its16-request limit; the original request and work are retained.');});
+ const f=await world(t),{result}=await f.run(()=>{throw Error('Conversation response reached its 16-request limit; the original request and work are retained.');});
  assert.equal(result.status,'unavailable');assert.equal(result.requestLimit,undefined);assert.equal(f.c.inspectConversationRequestFailure(f.cid),null);f.pass();
 });
 test('actual owner cancellation remains interrupted without a request-limit observation',async t=>{

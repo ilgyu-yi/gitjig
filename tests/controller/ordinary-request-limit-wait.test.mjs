@@ -27,7 +27,7 @@ const usage={input:0,output:0,cacheRead:0,cacheWrite:0,totalTokens:0,cost:{input
 
 async function world(t,{dependent=false,mixed=false,reportOnly=false,late,hold,projectSwitch=false,pausedGoal=false}={}){
  process.env.TMPDIR=path.join(home,'artifacts');let passed=false,release;
- const gate=new Promise(resolve=>release=resolve),c=await openController({installationHome:home,
+ const gate=new Promise(resolve=>release=resolve),c=await openController({installationHome:home,maxProviderRequests:16,
   runtimeProfile:{dockerBinary:process.execPath,dockerContext:'CONTROLLED_NO_ENGINE',image:'sha256:'+'b'.repeat(64)},
   interactionDelegation:{projectIds:['P'],maxAssignments:mixed?2:1}}),s=c.store;
  t.after(async()=>{release();await c.ordinary.drain();await c.close();if(!passed){allPassed=false;t.diagnostic('Retained ordinary limit WAIT '+root);}});

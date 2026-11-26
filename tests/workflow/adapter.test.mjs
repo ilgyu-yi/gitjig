@@ -93,6 +93,13 @@ test('durable checkpoint and operation entry are mandatory; collector failure ca
  const badCollector=await runRole(options([],[],{onObservation(){throw Error('SQLite unavailable');}}));assert.equal(badCollector.usable,false);assert.match(badCollector.issues.join(),/COLLECTOR/);
  const abort=new AbortController();abort.abort();const cancelled=await runRole(options([],[],{signal:abort.signal}));assert.equal(cancelled.usable,false);assert.equal(cancelled.terminal,'aborted');assert.equal(cancelled.historyRef,null);
 });
+test('the default governed request limit permits a role to finish beyond the former ceiling',async()=>{
+ const steps=Array.from({length:17},()=>({name:'bash',args:{command:'printf finite'}}));
+ const r=await runRole(options([],[],{model:model(result([]),steps,context=>{
+  assert.match(getCurrentSystemPrompt(context.messages),/The model request limit for this role is 1000\./);
+ })}));
+ assert.equal(r.usable,true,r.issues.join());assert.equal(r.providerRequests,18);assert.equal(r.requestLimit,undefined);
+});
 test('finite per-role provider cap stops actual repeating tool-use without a free extra request',async()=>{
  let calls=0;const steps=Array.from({length:8},()=>({name:'bash',args:{command:'printf finite'}}));
  const r=await runRole(options([],[],{maxProviderRequests:2,model:model(result([]),steps,context=>{
