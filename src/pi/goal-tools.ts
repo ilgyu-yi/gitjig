@@ -1,6 +1,7 @@
-import { Type } from '@earendil-works/pi-ai';
+import { Type } from 'typebox';
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent';
 import type { GoalProgress, GoalVerdict } from '../controller/goal-types.js';
+import { assertNonFractionalInteger } from './tool-arguments.js';
 export interface PiGoalControls {
     status(): unknown;
     progress?(input: GoalProgress): unknown;
@@ -62,6 +63,14 @@ export function createGoalTools(captured: PiGoalControls): ToolDefinition[] {
             name: 'goal_review',
             label: 'Record independent goal review',
             description: 'Assess the supplied frozen criteria and evidence, accounting for every pending finding ID. Finding criterion is the zero-based index in the frozen criteria array. Pass with findings is invalid. This verdict remains provisional until the exact review turn settles.',
+            prepareArguments(args) {
+                const findings = (args as {findings?: unknown} | null)?.findings;
+                if (Array.isArray(findings) && findings.length <= 32)
+                    for (const finding of findings) assertNonFractionalInteger(finding?.criterion);
+                else if (findings && typeof findings === 'object' && !Array.isArray(findings))
+                    assertNonFractionalInteger((findings as {criterion?: unknown}).criterion);
+                return args;
+            },
             parameters: Type.Object({
                 verdict: Type.Union([Type.Literal('pass'), Type.Literal('reject')]),
                 reason: text(),

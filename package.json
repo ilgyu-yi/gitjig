@@ -15,7 +15,7 @@
     "check": "tsc -p tsconfig.json --noEmit",
     "doctor": "node dist/cli/main.js doctor",
     "test:pi": "npm run build && node --test --test-concurrency=1 tests/pi/session.test.mjs tests/pi/request-boundary.test.mjs tests/pi/coordination-mcp-schema.test.mjs tests/pi/coordination-integer-guards.test.mjs tests/pi/conversation-result-pages.test.mjs tests/pi/conversation-result-sdk.test.mjs tests/pi/provider-schema.test.mjs tests/pi/bridge-selected-executable.test.mjs tests/pi/bridge-tool-admission.test.mjs tests/pi/bridge-permission-coherence.test.mjs tests/pi/bridge-thinking.test.mjs tests/pi/bridge-builtin-policy.test.mjs tests/pi/bridge-native-preflight.test.mjs tests/pi/bridge-owned-context.test.mjs tests/pi/claude-catalogue.test.mjs tests/pi/claude-output-policy.test.mjs tests/pi/claude-diagnostics.test.mjs tests/pi/claude-context.test.mjs tests/pi/claude-mcp109.test.mjs tests/pi/bridge-language-tail.test.mjs tests/pi/native-oauth.test.mjs tests/pi/owned-runtime.test.mjs tests/pi/owned-runtime-bridge.test.mjs tests/pi/provider-codecs.test.mjs tests/pi/builtin-provider-profiles.test.mjs tests/pi/owned-runtime-auxiliary.test.mjs tests/pi/native-owner-current-sdk.test.mjs tests/pi/native-owner-current-death.test.mjs tests/pi/native-owner-retention.test.mjs",
-    "test:providers": "npm run build && node --test --test-concurrency=1 tests/pi/owned-runtime.test.mjs tests/pi/native-oauth.test.mjs tests/pi/builtin-provider-profiles.test.mjs tests/pi/owned-runtime-bridge.test.mjs tests/pi/owned-runtime-auxiliary.test.mjs tests/controller/builtin-provider-ordinary.test.mjs",
+    "test:providers": "npm run build && node --test --test-concurrency=1 tests/app/sol-routing.test.mjs tests/pi/owned-runtime.test.mjs tests/pi/native-oauth.test.mjs tests/pi/builtin-provider-profiles.test.mjs tests/pi/owned-runtime-bridge.test.mjs tests/pi/owned-runtime-auxiliary.test.mjs tests/controller/builtin-provider-ordinary.test.mjs",
     "test:scope:absence": "npm run build && node --test --test-concurrency=1 tests/runtime/scope-absence.test.mjs tests/runtime/create-rejection.test.mjs",
     "test:scope:removal": "npm run build && node --test tests/runtime/scope-removal.test.mjs",
     "test:install:scope:removal": "node --test tests/installation/scope-removal.test.mjs",
@@ -130,10 +130,11 @@
     "test:install:source-save": "node tools/verify-changed.mjs --group sourceSaveInstalled"
   },
   "dependencies": {
-    "@earendil-works/pi-ai": "1.3.0",
-    "@earendil-works/pi-coding-agent": "1.3.0",
-    "@earendil-works/pi-tui": "1.3.0",
-    "@gitjig/pi-claude-bridge-host": "file:vendor/gitjig-pi-claude-bridge-host-0.9.0-gitjig.34.tgz"
+    "@earendil-works/pi-ai": "1.6.1",
+    "@earendil-works/pi-coding-agent": "1.6.1",
+    "@earendil-works/pi-tui": "1.6.1",
+    "@gitjig/pi-claude-bridge-host": "file:vendor/gitjig-pi-claude-bridge-host-0.9.0-gitjig.35.tgz",
+    "typebox": "1.3.27"
   },
   "devDependencies": {
     "@types/node": "24.19.2",
@@ -161,6 +162,7 @@
     "@earendil-works/pi-ai",
     "@earendil-works/pi-coding-agent",
     "@earendil-works/pi-tui",
-    "@gitjig/pi-claude-bridge-host"
+    "@gitjig/pi-claude-bridge-host",
+    "typebox"
   ]
 }

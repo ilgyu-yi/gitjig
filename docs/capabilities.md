@@ -38,7 +38,7 @@ Human local checks and repository administration need no internal agent transcri
 
 ## Environment and execution
 
-The source/npm route requires Node >=22.19.0 and targets macOS and Linux hosts; it has no CPU architecture allowlist. Official Pi 1.3.0 remains locked. macOS ARM64 with Colima Linux ARM64 is the current integrated test environment, not a product-wide platform restriction. Native Windows process ownership remains incomplete; WSL uses the Linux route. Prepared offline bundles currently include an exact macOS ARM64 runtime. See [Requirements](requirements.md) for dependencies and verification limits. See [Accounts and providers](providers.md) for provider-specific restrictions.
+The source/npm route requires Node >=22.19.0 and targets macOS and Linux hosts; it has no CPU architecture allowlist. Official Pi 1.6.1 is locked. macOS ARM64 with Colima Linux ARM64 is the current integrated test environment, not a product-wide platform restriction. Native Windows process ownership remains incomplete; WSL uses the Linux route. Prepared offline bundles currently include an exact macOS ARM64 runtime. See [Requirements](requirements.md) for dependencies and verification limits. See [Accounts and providers](providers.md) for provider-specific restrictions.
 
 Restricted project execution requires an explicit backend and immutable runtime image. Opening the UI and managing accounts/settings do not require a model turn or execution engine. Gitjig does not provision the daemon, pull images or authenticate accounts merely because a conversation is opened.
 

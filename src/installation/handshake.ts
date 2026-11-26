@@ -6,6 +6,12 @@ import { privateDirectory } from '../controller/ownership.js';
 import { installationWorkerFailureExit } from './child.js';
 import type { Role, PlanProposal } from '../workflow/types.js';
 import type { PiProjectOperations } from '../pi/operations.js';
+export function installationSdkVersion(packageBytes: Buffer): string {
+    const version: unknown = JSON.parse(packageBytes.toString('utf8')).dependencies?.['@earendil-works/pi-coding-agent'];
+    if (typeof version !== 'string' || !/^\d+\.\d+\.\d+$/u.test(version))
+        throw Error('Installed package does not pin an exact public SDK version');
+    return version;
+}
 const healthContract = 'Installation health only: exercise the installed public SDK, role output serialization and native checkpoints/history. Use only this isolated fixture. Do not read or write project files, execute shell commands, contact external providers, or claim task correctness or action permission.';
 /** Actual loaded SDK/role adapter exercise in an isolated namespace. It grants no live standing. */
 export async function installedHandshake(namespace: string) {
@@ -33,7 +39,7 @@ export async function installedHandshake(namespace: string) {
     }
     const sdk = await import('@earendil-works/pi-coding-agent');
     const actualSdkRoot = await fs.realpath(sdk.getPackageDir()), expectedSdkRoot = await fs.realpath(path.join(payloadRoot, 'node_modules/@earendil-works/pi-coding-agent'));
-    if (sdk.VERSION !== '1.3.0' || actualSdkRoot !== expectedSdkRoot)
+    if (sdk.VERSION !== installationSdkVersion(await fs.readFile(path.join(payloadRoot, 'package.json'))) || actualSdkRoot !== expectedSdkRoot)
         throw Error('Actual public SDK package identity differs from installed payload');
     const { initializePiHost } = await import('../pi/host.js'), { runRole } = await import('../workflow/adapter.js'), { loadCriteria } = await import('../controller/criteria.js'), { createAssistantMessageEventStream } = await import('@earendil-works/pi-ai/compat');
     const host = await initializePiHost({ stateRoot: path.join(namespace, 'state'), artifactRoot }), criteria = await loadCriteria(), work = path.join(namespace, 'work');

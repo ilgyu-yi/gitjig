@@ -159,7 +159,7 @@ export class AccountDialog implements Component, Focusable {
     }
     invalidate(): void { this.pending?.component.invalidate(); }
     render(width: number): string[] {
-        const lines = new Text(uiText(this.options.locale ?? 'en', 'account.header'), 0, 0).render(width);
+        const lines = [...new Text(uiText(this.options.locale ?? 'en', 'account.header'), 0, 0).render(width)];
         for (const message of [...this.authMessages.values(), ...this.messages])
             lines.push(...new Text(this.redact(message), 0, 0).render(width));
         const pending = this.pending;

@@ -1,7 +1,8 @@
 import { nativeConversationResult, type ResultRead } from './conversation-result.js';
-import { Type } from '@earendil-works/pi-ai';
+import { Type } from 'typebox';
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent';
 import type { PublicationAction } from '../platform/github-publication.js';
+import { assertNonFractionalInteger } from './tool-arguments.js';
 /** Trusted closures capture source identity and authority; tool arguments cannot choose either. */
 export type PiAssignment = {
     projectId: string;
@@ -87,9 +88,10 @@ export interface PiCoordination {
     }): Promise<unknown>;
 }
 const id = () => Type.String({ minLength: 1, maxLength: 512 });
-// Pi converts Type.Integer fractions by truncation. Opaque public integer
-// schemas preserve the native wire contract and reject those lossy operands.
 const revision = () => Type.Unsafe<number>({ type: 'integer', minimum: 0, maximum: Number.MAX_SAFE_INTEGER });
+const exactRevisionFields = ['expectedGeneration', 'observedDirectionRevision', 'expectedWorkEpoch', 'expectedRelationRevision'] as const;
+const exactRevisionTools = new Set(['conversation_address', 'conversation_assign', 'conversation_resume_assignment',
+    'conversation_recover_assignment', 'conversation_parent', 'conversation_publish']);
 const text = () => Type.String({ minLength: 1, maxLength: 128 * 1024 });
 const strict = { additionalProperties: false };
 const publicationAction = () => Type.Union([
@@ -173,5 +175,18 @@ export function createCoordinationTools(callbacks: PiCoordination, onWait: () =>
             onWait();
             return { ...result, terminate: true };
         } });
+    for (const tool of tools) {
+        if (!exactRevisionTools.has(tool.name)) continue;
+        tool.prepareArguments = args => {
+            const input = args as Record<string, unknown> | null;
+            for (const field of exactRevisionFields)
+                assertNonFractionalInteger(input?.[field]);
+            if (tool.name === 'conversation_publish') {
+                const action = input?.action as {kind?: string; parent?: {number?: unknown}} | undefined;
+                if (action?.kind === 'create-comment') assertNonFractionalInteger(action.parent?.number);
+            }
+            return args;
+        };
+    }
     return tools;
 }

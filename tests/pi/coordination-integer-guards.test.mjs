@@ -1,13 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { Type, validateToolArguments } from '@earendil-works/pi-ai';
+import { validateToolArguments } from '@earendil-works/pi-ai';
+import { Type } from 'typebox';
 import { createCoordinationTools } from '../../dist/pi/coordination.js';
 import { createGoalTools } from '../../dist/pi/goal-tools.js';
 import { structuredAssignmentWorld } from '../controller/structured-assignment-fixture.mjs';
 import { scripted } from '../controller/effect-fixture.mjs';
 
-const validate = (tool, args) => validateToolArguments(tool, { type: 'toolCall', id: 'integer-guard', name: tool.name, arguments: args });
+const validate = (tool, args) => validateToolArguments(tool, { type: 'toolCall', id: 'integer-guard', name: tool.name, arguments: tool.prepareArguments ? tool.prepareArguments(args) : args });
 const latest = (context, name) => context.messages.filter(message => message.role === 'toolResult' && message.toolName === name).at(-1);
 async function run(f, action) {
     const c = f.c, model = scripted(action); model.provider = 'integer-guard-' + randomUUID(); model.definition.api = 'integer-guard-api-' + randomUUID();
