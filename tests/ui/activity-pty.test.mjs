@@ -348,7 +348,7 @@ for (const locale of ['en','ko']) test(`cold reopen separates its last delivered
     await launch(f,'first-response',[
         {wait:tr('footer.setup'),send:original+'\x1b\r'},
         {wait:tr('activity.stage.model'),send:followUp?additional+'\x1b\r':draft,...followUp?{}:{releaseFile:release}},
-        ...followUp?[{wait:tr('pane.queuedNext',{count:1,mode:tr('input.mode.follow-up'),preview:additional}),send:draft,releaseFile:release}]:[],
+        ...followUp?[{wait:tr('pane.outgoing',{preview:additional}),send:draft,releaseFile:release}]:[],
         {wait:tr('response.delivered'),queries:[inputs,settled],waitIdle:true,assertDraft:draft,expectedInputs,send:'\x07q'},
     ],[],locale);
     const last=locale==='ko'?'지난 응답 완료':'Last response completed';
@@ -911,7 +911,7 @@ const pause = () => new Promise(resolve => setTimeout(resolve, 10));
     const copy = locale === 'ko'
         ? {ready:'/ready 설정', received:'요청 접수됨 · 실행 시작 대기', capacity:'실행 차례 기다리는 중', starting:'요청 실행 시작 중', extra:'추가 입력 · ', checking:'선택한 모델 확인 중', cancelling:'준비 취소 중', cancelled:'요청 준비 취소됨', complete:'응답 완료', seconds:'초'}
         : {ready:'/ready setup', received:'Request received · waiting to start', capacity:'Waiting for execution capacity', starting:'Starting request', extra:'Additional input · ', checking:'Checking selected model', cancelling:'Cancelling preparation', cancelled:'Request preparation cancelled', complete:'Response complete', seconds:'s'};
-    const first = 'First accepted request', second = 'Second unsent request';
+    const first = 'First accepted request 한글', second = 'Second unsent request';
     const originalOnly = [
         {sql:'SELECT COUNT(*) FROM runs', rows:[[1]]},
         {sql:'SELECT text,state FROM conversation_inputs', rows:[[first,'INITIAL_RESERVED']]},
@@ -928,6 +928,9 @@ const pause = () => new Promise(resolve => setTimeout(resolve, 10));
         {wait:copy.complete, waitIdle:true, assertDraft:second, expectedInputs:1, terminate:true, send:''},
     ], ['--import',guard], locale);
     const {actionOutputOffsets} = JSON.parse(await fs.readFile(path.join(f.root,'overlapping.terminal.progress.json'),'utf8'));
+    const beforeResponse = Buffer.from(output).subarray(0, actionOutputOffsets[6]).toString();
+    assert.ok(beforeResponse.includes(translator(locale)('pane.outgoing', {preview:first})),
+        'Durably accepted original text is visible before native model entry');
     const overlapping = Buffer.from(output).subarray(actionOutputOffsets[2], actionOutputOffsets[5]).toString();
     assert.doesNotMatch(overlapping.replaceAll(copy.extra + copy.cancelling, ''), new RegExp(copy.cancelling + '.*· \\d+' + copy.seconds));
     const ages = [...overlapping.matchAll(new RegExp(copy.capacity + ' · (\\d+)'+copy.seconds, 'g'))].map(match => Number(match[1]));

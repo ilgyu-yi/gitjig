@@ -701,7 +701,7 @@ export class Controller {
         return this.interactions.entry();
     }
     /** Bounded pane summary: reserved (in-flight) inputs are counted apart from inputs still waiting behind them. */
-    inspectConversationInputStatus(id: string, activeInputId?: string): {
+    inspectConversationInputStatus(id: string, activeInputId?: string, previewInputId = activeInputId): {
         count: number;
         preview: string;
         reserved: number;
@@ -712,6 +712,7 @@ export class Controller {
         firstQueuedInputId: string | null;
         activeInputQueued: boolean;
         activeInputWaiting: boolean;
+        activeOwnerPreview: string | null;
         reconciliationCount: number;
         deliveryIssue?: {count: number; reason: string};
     } | undefined {
@@ -724,11 +725,15 @@ export class Controller {
             (SELECT json_group_array(mode) FROM (SELECT mode FROM p WHERE state IN ('QUEUED','NATIVE_PENDING') ORDER BY ord LIMIT 2)) AS waitingModes,
             COUNT(routeError) AS deliveryIssueCount,(SELECT routeError FROM p WHERE routeError IS NOT NULL ORDER BY ord LIMIT 1) AS deliveryIssueReason,
             (SELECT id FROM p WHERE state='QUEUED' ORDER BY ord LIMIT 1) AS firstQueuedInputId,
-            MAX(CASE WHEN id=? THEN state END) AS activeInputState FROM p`, id, activeInputId ?? null);
+            (SELECT CASE WHEN s.conversation=i.conversation AND json_valid(s.origin) THEN
+                CASE WHEN json_extract(s.origin,'$.kind')='owner-conversation-input' THEN substr(s.raw,1,161) END END
+                FROM conversation_inputs i JOIN sources s ON s.id=i.source WHERE i.conversation=? AND i.id=?
+                AND i.state IN ('QUEUED','INITIAL_RESERVED','NATIVE_PENDING')) AS activeOwnerPreview,
+            MAX(CASE WHEN id=? THEN state END) AS activeInputState FROM p`, id, id, previewInputId ?? null, activeInputId ?? null);
         if (!row.count)
             return undefined;
         const activeInputQueued = row.activeInputState === 'QUEUED';
-        return { count: row.count, preview: row.preview, reserved: row.reserved, waiting: row.waiting, waitingPreviews: JSON.parse(row.waitingPreviews), waitingInputIds: JSON.parse(row.waitingInputIds), waitingModes: JSON.parse(row.waitingModes), firstQueuedInputId: row.firstQueuedInputId, activeInputQueued, activeInputWaiting: activeInputQueued || row.activeInputState === 'NATIVE_PENDING', reconciliationCount: row.reconciliationCount, ...(row.deliveryIssueCount ? {deliveryIssue: {count: row.deliveryIssueCount, reason: row.deliveryIssueReason}} : {}) };
+        return { count: row.count, preview: row.preview, reserved: row.reserved, waiting: row.waiting, waitingPreviews: JSON.parse(row.waitingPreviews), waitingInputIds: JSON.parse(row.waitingInputIds), waitingModes: JSON.parse(row.waitingModes), firstQueuedInputId: row.firstQueuedInputId, activeInputQueued, activeInputWaiting: activeInputQueued || row.activeInputState === 'NATIVE_PENDING', activeOwnerPreview: row.activeOwnerPreview, reconciliationCount: row.reconciliationCount, ...(row.deliveryIssueCount ? {deliveryIssue: {count: row.deliveryIssueCount, reason: row.deliveryIssueReason}} : {}) };
     }
     inspectConversationProgress(id: string) {
         this.assertOpen();
