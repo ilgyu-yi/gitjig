@@ -446,9 +446,6 @@ export async function startConversationUI(options: StartConversationUIOptions): 
         },
     };
     let leftId = selected;
-    const lastChild = new Map<string, string>();
-    if (initialView.parentId)
-        lastChild.set(initialView.parentId, selected);
     let hierarchyPending = false;
     let forcedDraftFailure: Error | undefined;
     let switchPending = false;
@@ -1264,8 +1261,6 @@ export async function startConversationUI(options: StartConversationUIOptions): 
         const view = controller.inspectConversation(id), cache = cacheFor(view);
         applyActivePresentation();
         cache.humanSequence = ++sequence;
-        if (view.parentId)
-            lastChild.set(view.parentId, id);
         return { view, cache };
     };
     const selectConversation = async (id: string, strictHistory = false) => {
@@ -1818,11 +1813,9 @@ export async function startConversationUI(options: StartConversationUIOptions): 
                 }
                 return;
             }
-            const children = roster.filter(view => view.parentId === current.conversationId);
-            const remembered = children.find(view => view.conversationId === lastChild.get(current.conversationId));
-            const target = remembered ?? (children.length === 1 ? children[0] : undefined);
-            if (target)
-                await selectConversation(target.conversationId);
+            const children = roster.filter(view => isNavigationTarget(view, current.conversationId, 'children'));
+            if (children.length === 1)
+                await selectConversation(children[0]!.conversationId);
             else
                 await switchDialog('children');
         }

@@ -81,11 +81,12 @@ try:
   step('return-after-refusal',up,'root');send(paste('STALE_ACK'));wait(lambda:c['drafts'][c['root']]=='ROOT_DRAFTSTALE_ACK')
  elif cfg['fault']:
   stage='inject-save-failure';send(paste('UNSAVED'));wait(lambda:c.get('failed',0)>0)
-  before=c['failed'];send(up);wait(lambda:c.get('failed',0)>before and b'INJECTED_HIERARCHY_DRAFT_UNAVAILABLE' in out)
+  before=c['failed'];send(up);wait(lambda:c.get('failed',0)>before and any('Draft persistence unavailable' in line for line in c.get('frame',[])))
   assert c['selected']==c['b'] and c['lastAttempt']['text']=='B_DRAFTUNSAVED';checks.append('save-refused')
   pathlib.Path(cfg['recover']).write_text('explicit-owned-recovery');wait(lambda:c.get('recovered'))
   step('exact-text-recovered',up,'root');assert c['drafts'][c['b']]=='B_DRAFTUNSAVED'
-  step('recovered-child-return',down,'b')
+  stage='recovered-child-return';send(down);wait(lambda:any('children and ancestors' in line for line in c.get('frame',[])))
+  step(stage,paste(c['b'])+b'\r','b')
  else:
   stage='root-boundary';send(up);wait(lambda:b'No accessible parent' in out[offset:]);assert c['selected']==c['root'];checks.append(stage)
   wait(lambda:any('No accessible parent' in line for line in c.get('frame',[])))
@@ -116,7 +117,16 @@ try:
   send(paste(c['b'])+b'\r');wait(lambda:at('b'));checks.append(stage);assert c['drafts'][c['root']]=='ROOT_DRAFT'
   wait(lambda:any('Parent:' in line and '[Conversation idle]' in line for line in c.get('frame',[])) and not any('No accessible parent' in line for line in c.get('frame',[])))
   checks.append('notice-cleared-on-navigation')
-  step('parent-return',up,'root');step('remembered-child',down,'b');step('one-level-grandchild',down,'grand')
+  step('parent-return',up,'root')
+  stage='picker-reopens-for-siblings';send(down)
+  wait(lambda:any('children and ancestors' in line for line in c.get('frame',[])) and
+       all(any('CHILD' in line and '#'+c[key][:8] in line for line in c['frame']) for key in ('a','b')))
+  assert c['selected']==c['root'] and c['drafts'][c['root']]=='ROOT_DRAFT'
+  step(stage,paste(c['a'])+b'\r','a')
+  step('alternate-parent-return',up,'root')
+  stage='choose-previous-child';send(down);wait(lambda:any('children and ancestors' in line for line in c.get('frame',[])))
+  step(stage,paste(c['b'])+b'\r','b')
+  step('one-level-grandchild',down,'grand')
   stage='release-repeat-no-extra-step';send(b'\x1b[1;2:3A\x1b[1;2:2A'+paste('ACK'));wait(lambda:'ACK' in c.get('drafts',{}).get(c.get('grand'),''));assert c['selected']==c['grand'];checks.append(stage)
   stage='leaf-boundary';send(down);wait(lambda:b'no accessible children' in out[offset:]);assert c['selected']==c['grand'];checks.append(stage)
   step('grand-parent',up,'b');step('root-return',up,'root')
@@ -127,8 +137,9 @@ try:
   destination=next(c[key] for key in ('root','a','b','grand','other') if '#'+c[key][:8] in row)
   send(b'\r');wait(lambda:c.get('visibleSecond')==destination or b'Choose a different conversation to split' in out[offset:])
   assert destination!=c['root'] and c.get('visibleSecond')==destination and c['selected']==c['root'];checks.append(stage)
-  send(b'\x07s');wait(lambda:c.get('second') is None)
-  stage='split-current-context';send(b'\x07s');wait(lambda:b'choose the second pane' in out[offset:]);send(paste(c['root']))
+  send(b'\x07s');wait(lambda:c.get('second') is None and any('ROOT_DRAFT' in line for line in c.get('frame',[])))
+  stage='split-current-context';send(b'\x07s')
+  wait(lambda:any('choose the second pane' in line for line in c.get('frame',[])));send(paste(c['root']))
   wait(lambda:any('This conversation is already in the first pane' in line for line in c.get('frame',[])))
   assert not any('Enter open' in line for line in c['frame'])
   send(b'\r\x15'+paste(c['a']));wait(lambda:any(c['a'] in line for line in c.get('frame',[])) and any('Enter open' in line for line in c['frame']))
