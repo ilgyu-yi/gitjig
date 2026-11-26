@@ -966,6 +966,11 @@ export class Interactions {
         await tail;
     } while (tail !== this.noticeTail); }
     resultsCommitted(cid: string) { this.noticeCommitted(cid); }
+    assignmentChanged(cid: string) {
+        const conversation = this.store.one('SELECT generation FROM conversations WHERE id=?', cid);
+        if (conversation)
+            this.emit({ conversationId: cid, generation: conversation.generation, type: 'coordination-notice' });
+    }
     subscribe(listener: (event: InteractionEvent) => void) {
         this.listeners.add(listener);
         return () => {

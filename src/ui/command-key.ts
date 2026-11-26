@@ -12,4 +12,4 @@ export const commandMenuLetters = ['c', 'j', 'p', 'd', 's', 'w', 'n', 'r', 'h', 
 export const commandDiscoveryKey = '/';
 export const commandMenuHelpKey = '?';
 export const commandMenuReservedKeys = [...commandMenuLetters, commandDiscoveryKey, commandMenuHelpKey] as const;
-export type ConversationCommand = typeof commandMenuLetters[number] | typeof commandDiscoveryKey;
+export type ConversationCommand = typeof commandMenuLetters[number] | typeof commandDiscoveryKey | 'recovery';

@@ -1,6 +1,7 @@
 import { assignmentResumeFingerprint, recoverGovernedAssignment } from './assignment-authority.js';
 import { assertConversationExecutable } from './completed-resources.js';
-import { inspectConversationResult, inspectConversationResultDetail, inspectAssignmentResultMetadata, coordinationBytes } from './conversation-results.js';
+import { inspectConversationResult, inspectConversationResultDetail, inspectAssignmentResultMetadata, inspectOrdinaryAssignmentRecovery,
+    inspectCoordinatorDescendantRecovery, coordinationBytes } from './conversation-results.js';
 import { randomUUID } from 'node:crypto';
 import { planContextAssignment, inheritContextTarget, type ContextAssignmentReceipt } from './context-coordination.js';
 import type { Store } from './store.js';
@@ -11,6 +12,7 @@ import { captureConversationMode } from './application-model.js';
 import { conversationModelChoice, matchesExternalModel, writeConversationModelChoice } from './model-choice.js';
 import type { ConversationModelMode } from './interaction-types.js';
 import type { AssignmentOwnerAction } from './change-types.js';
+import { currentAssignmentResultId } from './assignment-result-attempt.js';
 export interface Delegation {
     projectIds: readonly string[];
     maxAssignments: number;
@@ -59,7 +61,7 @@ export function coordination(options: {
     const resumeFingerprint = (assignment: { id: string; target: string; work: string | null; state: string }, resultId: string,
         work: { state: string; epoch: number }, target: ReturnType<Interactions['inspect']>, data: any, delegation: Delegation) => {
         if (!assignment.work || assignment.state !== 'UNAVAILABLE' || work.state !== 'ACTIVE' || target.state !== 'IDLE' ||
-            data.resultId !== resultId || (data.reentries ?? []).some((entry: {resumeResultId?: string}) => entry.resumeResultId === resultId))
+            currentAssignmentResultId(data) !== resultId || (data.reentries ?? []).some((entry: {resumeResultId?: string}) => entry.resumeResultId === resultId))
             return null;
         const recorded = inspectAssignmentResultMetadata(store, assignment, resultId, { identity, delegation });
         return recorded.state === 'available' && !recorded.snapshot.reviewReady
@@ -85,7 +87,11 @@ export function coordination(options: {
                 }
             }
         }
-        const outcome = { assignmentId: assignment.id, state: assignment.state, operation: data.operation ?? null, resultId: publishedResultId ?? data.resultId ?? null,
+        const currentResultId = currentAssignmentResultId(data);
+        const stoppedBeforeResult = assignment.state === 'UNAVAILABLE' && !currentResultId;
+        const outcome = { assignmentId: assignment.id, state: assignment.state, operation: data.operation ?? null,
+            resultId: publishedResultId ?? currentResultId ?? null,
+            ...(stoppedBeforeResult ? { resultAvailable: false } : {}),
             ...(resultAvailable === undefined ? {} : { resultAvailable }),
             conversationId: assignment.target, workId: assignment.work, workState: work?.state ?? null, workEpoch: work?.epoch ?? null };
         const recovery = assignment.state === 'CANCELLED' && work?.state === 'CANCELLED' && data.operation === 'change' &&
@@ -114,6 +120,9 @@ export function coordination(options: {
         return { ...outcome, ...(recovery ? { recovery } : {}),
             ...(resume ? { nextAction: 'When the original instructions still apply, pass resume unchanged to conversation_resume_assignment. Resolve retained findings within the original scope.' +
                 (reentryHold ? ' Sending new instructions requires the separate reentryOwnerAction.' : ' Use reentry only for new instructions.'), resume } : {}),
+            ...(stoppedBeforeResult && !ownerAction ? {
+                nextAction: 'This exact assignment stopped before a current result could be established. Report the stopped assignment to the owner and inspect its original recovery from the parent conversation. Historical results describe earlier attempts.',
+            } : {}),
             ...(reentryAvailable ? { reentry } : {}), ...(ownerAction ? { ownerAction } : {}),
             ...(resume && reentryHold ? { reentryOwnerAction: reentryHold } : {}),
             ...(reentryAvailable && resumeHold ? { resumeOwnerAction: resumeHold } : {}) };
@@ -126,15 +135,34 @@ export function coordination(options: {
         const assignments = rows.map(assignmentOutcome);
         const base = { ...view, workEpoch: work?.epoch ?? null, workState: work?.state ?? null, assignments };
         if (!includeRecordedResult || view.workId === null) return base;
-        const matches = rows.filter((row, index) => row.work === view.workId && assignments[index]!.operation === 'change');
+        const matches = rows.filter(row => row.work === view.workId);
         if (!matches.length) return base;
         const assignment = matches[0]!, outcome = assignments[rows.indexOf(assignment)]!;
+        const reader = {identity, delegation: options.delegation};
+        const originalRecovery = (reason: {kind: 'local-model-request-limit'; limit: number} |
+            {kind: 'current-result-unreadable' | 'failure-cause-unverified'}) => ({
+            ...reason, assignmentId: assignment.id, workId: assignment.work, conversationId: assignment.target,
+            ...(reason.kind === 'local-model-request-limit' ? {resultId:outcome.resultId,
+                nextAction:'Report that this original investigation reached the gitjig model request limit. Use /result --delegated in this parent conversation to inspect the original work.'}
+                : {nextAction:'Report that the current outcome could not be fully verified. Use /result --delegated in this parent conversation to check the retained evidence for the original assignment.'}),
+        });
+        if (outcome.operation === 'investigate') {
+            const detail = matches.length === 1 && outcome.state === 'UNAVAILABLE' && outcome.resultId
+                ? inspectOrdinaryAssignmentRecovery(store, assignment, outcome.resultId, reader) : undefined;
+            const descendantRecovery = matches.length === 1 ? inspectCoordinatorDescendantRecovery(store, assignment.id, reader) : undefined;
+            const observed = {...base, ...(detail ? {originalRecovery:originalRecovery(detail)} : {}),
+                ...(descendantRecovery ? {descendantRecovery} : {})};
+            return Buffer.byteLength(JSON.stringify(observed)) <= coordinationBytes ? observed : base;
+        }
+        if (outcome.operation !== 'change') return base;
         const recordedResult = matches.length === 1
-            ? inspectAssignmentResultMetadata(store, assignment, outcome.resultId, { identity, delegation: options.delegation })
+            ? inspectAssignmentResultMetadata(store, assignment, outcome.resultId, reader)
             : { state: 'unavailable' as const, reason: 'ambiguous-original-assignment' };
         const delivered = { ...base, recordedResult: recordedResult.state === 'available'
             ? { temporalScope: 'publication-only' as const, ...recordedResult }
-            : recordedResult };
+            : recordedResult,
+            ...(matches.length === 1 && outcome.state === 'UNAVAILABLE' && outcome.resultId && recordedResult.state === 'unavailable' && !outcome.resume
+                ? {originalRecovery:originalRecovery({kind:'current-result-unreadable'})} : {}) };
         if (Buffer.byteLength(JSON.stringify(delivered)) <= coordinationBytes) return delivered;
         const omitted = { ...base, recordedResult: { state: 'unavailable' as const, reason: 'status-output-bound' } };
         return Buffer.byteLength(JSON.stringify(omitted)) <= coordinationBytes ? omitted : base;
@@ -406,6 +434,8 @@ export function coordination(options: {
                     (['conversationId', 'workId', 'runId', 'launchId', 'generation', 'directionRevision', 'initialInputId'] as const).some(key => current.identity[key] !== identity[key]))
                     throw new Error('WAIT needs exact current native ownership');
                 if (unavailable()) throw new Error('Original assignment outcome changed while quiescing WAIT; inspect retained task and native settlement');
+                delete data.continuationError;
+                delete data.continuationFailure;
                 store.run('UPDATE conversation_state SET resource=?,data=? WHERE conversation=?', 'WAITING', JSON.stringify({ ...data, runId: identity.runId, waitHandles: input.resultHandles, continuationAuthorized: true, sourceIdentity: identity }), identity.conversationId);
             });
             options.onWait();

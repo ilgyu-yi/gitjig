@@ -8,12 +8,17 @@ import { commandDiscoveryKey, commandKeyLabel, commandMenuHelpKey, commandMenuLe
 export class CommandMenu extends Container {
     private readonly hint: Text;
     private readonly list: SelectList;
-    constructor(private readonly choose: (key: ConversationCommand) => void, private readonly cancel: () => void, private readonly commandKey: CommandKey = defaultCommandKey, private readonly locale: UiLocale = 'en') {
+    private readonly commands: readonly ConversationCommand[];
+    constructor(private readonly choose: (key: ConversationCommand) => void, private readonly cancel: () => void, private readonly commandKey: CommandKey = defaultCommandKey, private readonly locale: UiLocale = 'en', recoveryLabel?: string) {
         super();
         const bindings = getKeybindings();
         this.hint = new Text(chrome('secondary', uiText(locale, 'command.hint', { up: bindings.getKeys('tui.select.up').join('/'), down: bindings.getKeys('tui.select.down').join('/'), confirm: bindings.getKeys('tui.select.confirm').join('/'), key: commandKeyLabel(commandKey) })), 0, 0);
         this.addChild(new Text(chrome('active', uiText(locale, 'command.title', { key: commandKeyLabel(commandKey) })), 0, 0));
-        this.list = new SelectList(commandMenuLetters.map(key => ({ value: key, label: `${key} ${uiText(locale, `command.${key}`)}` })), 4, getSelectListTheme());
+        this.commands = recoveryLabel ? ['recovery', ...commandMenuLetters] : commandMenuLetters;
+        this.list = new SelectList([
+            ...(recoveryLabel ? [{ value: 'recovery', label: recoveryLabel }] : []),
+            ...commandMenuLetters.map(key => ({ value: key, label: `${key} ${uiText(locale, `command.${key}`)}` })),
+        ], 4, getSelectListTheme());
         this.list.onSelect = item => choose(item.value as ConversationCommand);
         this.list.onCancel = cancel;
         this.addChild(this.list);
@@ -45,7 +50,7 @@ export class CommandMenu extends Container {
         if (bindings.matches(data, 'tui.select.pageUp') || bindings.matches(data, 'tui.select.pageDown')) {
             const selected = this.list.getSelectedItem();
             if (selected)
-                this.list.setSelectedIndex(commandMenuLetters.findIndex(key => key === selected.value) + (bindings.matches(data, 'tui.select.pageUp') ? -4 : 4));
+                this.list.setSelectedIndex(this.commands.findIndex(key => key === selected.value) + (bindings.matches(data, 'tui.select.pageUp') ? -4 : 4));
             return;
         }
         const selectionKeys = repeat ? ['tui.select.up', 'tui.select.down'] as const :

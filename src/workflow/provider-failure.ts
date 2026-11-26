@@ -1,3 +1,5 @@
+import type { Role } from './types.js';
+
 /** Recorded provider information for display only; never retry or acceptance authority. */
 export interface ProviderUsageLimit {
     version: 1;
@@ -13,6 +15,13 @@ export interface ProviderUsageLimit {
 }
 export function validProviderReset(value: unknown): value is number {
     return typeof value === 'number' && Number.isFinite(value) && value > 0 && Number.isFinite(new Date(value * 1000).getTime());
+}
+export function providerUsageLimitRole(value: unknown): Role | undefined {
+    switch (value) {
+        case 'planner': case 'challenger': case 'adjudicator': case 'implementer':
+        case 'reviewer': case 'repairer': case 'confirmer': return value;
+        default: return undefined;
+    }
 }
 export function providerUsageLimit(value: unknown): ProviderUsageLimit | undefined {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return;

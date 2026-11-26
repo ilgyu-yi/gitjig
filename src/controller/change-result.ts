@@ -1,7 +1,7 @@
 import {validateManifest} from './capture.js';
 import {delta, effective, hash} from './change-files.js';
 import type {ChangeResultView} from './change-types.js';
-import {providerUsageLimit} from '../workflow/provider-failure.js';
+import {providerUsageLimit, providerUsageLimitRole} from '../workflow/provider-failure.js';
 
 /** Recorded process/report facts are independent of coverage, verdict and repair eligibility.
  * Never infer a process start from cancellation, or a failure's cause from stderr.
@@ -36,14 +36,19 @@ export function recordedResultSummary(result: ChangeResultView) {
     const roster = <T, A extends string>(value: {availability: A; entries: T[]; total: number | null; omitted: number}) =>
         ({availability: value.availability, entries: value.entries.slice(0, 4).map(entry => ({...entry})),
             total: value.total, omitted: value.omitted + Math.max(0, value.entries.length - 4)});
+    const producer = result.providerFailure ?? {
+        role: result.planningFailure?.role, usageLimit: result.planningFailure?.providerFailure,
+    };
     const quota = result.recordedPhase === 'BLOCKED' && result.state !== 'UNKNOWN' && !result.reviewReady
-        ? providerUsageLimit(result.providerFailure?.usageLimit ?? result.planningFailure?.providerFailure) : undefined;
+        ? providerUsageLimit(producer.usageLimit) : undefined;
+    const role = providerUsageLimitRole(producer.role);
     const summary = {
         workId: result.workId, projectId: result.projectId, state: result.state,
         recordedPhase: result.recordedPhase, reviewReady: result.reviewReady,
         verificationEvidenceAvailability: result.verificationEvidence?.availability ?? 'unknown',
         ...(result.roleRequestLimit ? {roleRequestLimit: structuredClone(result.roleRequestLimit)} : {}),
-        ...(quota ? {providerUsageLimitReset: quota.resetsAt ?? null} : {}),
+        ...(quota ? {providerUsageLimitReset: quota.resetsAt ?? null,
+            ...(role ? {providerUsageLimitRole: role} : {})} : {}),
         blocked: [...result.blocked], blockedOmitted: result.blockedOmitted,
         ...(result.pendingFindings ? {pendingFindings: result.pendingFindings} : {}),
         ...(result.planningClarification ? {planningClarification: {outputId: result.planningClarification.outputId,

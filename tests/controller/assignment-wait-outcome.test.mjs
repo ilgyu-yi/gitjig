@@ -5,6 +5,15 @@ import { structuredAssignmentWorld } from './structured-assignment-fixture.mjs';
 import { scripted } from './effect-fixture.mjs';
 import { createCoordinationTools } from '../../dist/pi/coordination.js';
 import { queuedAssignmentWorld } from './queued-assignment-fixture.mjs';
+import { currentAssignmentResultId } from '../../dist/controller/assignment-result-attempt.js';
+
+test('result pointers keep their operation-specific attempt correspondence', () => {
+    const source = {resultId:'prior', reentries:[{inputId:'new-input'}]};
+    assert.equal(currentAssignmentResultId({...source,operation:'change'}),undefined);
+    assert.equal(currentAssignmentResultId({...source,operation:'change',publishedForInputId:'new-input',resultId:'current'}),'current');
+    assert.equal(currentAssignmentResultId({operation:'integrate',resultId:'effect',reentries:[{source:{runId:'new-run'}}]}),'effect');
+    assert.equal(currentAssignmentResultId({operation:'investigate',resultId:'prior',launchResultUnavailable:true}),undefined);
+});
 
 const receipt = (context, name) => {
     const result = context.messages.filter(message => message.role === 'toolResult' && message.toolName === name).at(-1);
@@ -37,7 +46,13 @@ for (const cancel of [false, true]) test(`original ${cancel ? 'cancelled' : 'una
             assert.equal(status.assignments.length, 1); assert.equal(status.assignments[0].assignmentId, f.child.assignmentId);
             assert.equal(status.assignments[0].state, cancel ? 'CANCELLED' : 'UNAVAILABLE');
             if (cancel) assert.deepEqual(status.assignments[0].recovery, { tool: 'conversation_recover_assignment', assignmentId: f.child.assignmentId, expectedWorkEpoch: 2, observedDirectionRevision: 0, nextAction: 'Explicitly recover this original assignment, then separately reenter the same target using the returned direction revision; recovery eligibility is checked by the tool' });
-            else assert.equal(status.assignments[0].recovery, undefined);
+            else {
+                assert.equal(status.assignments[0].recovery, undefined);
+                assert.equal(status.assignments[0].resume, undefined);
+                assert.equal(status.assignments[0].resultAvailable,false);
+                assert.equal(status.assignments[0].resultId,null);
+                assert.match(status.assignments[0].nextAction,/stopped before a current result/);
+            }
             assert.equal(JSON.stringify(status.assignments).includes('Owned delegated task'), false);
             return { tool: { name: 'conversation_wait', arguments: { resultHandles: [f.child.assignmentId] } } };
         }

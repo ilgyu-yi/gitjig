@@ -1,5 +1,6 @@
 import { noticeResultPresentation } from './notice-result.js';
-import { recordedDelegatedResultText } from './recorded-delegated-result.js';
+import { isDeepStrictEqual } from 'node:util';
+import { delegatedStopText, delegatedWaitStatus, hasRecordedDelegatedStop, recommendedDelegatedRecovery, recordedDelegatedResultText, stoppedDelegatedWaitTargets } from './recorded-delegated-result.js';
 import { sourceSaveCommands } from './source-save-commands.js';
 import { resetCommands, type ResetHandoff } from './reset-commands.js';
 import { errorCommands } from './error-commands.js';
@@ -416,11 +417,36 @@ export async function startConversationUI(options: StartConversationUIOptions): 
             }
             return result;
         };
-        return { roster, change, goal, progress, summary, activeChildWorks, recorded: (view: ConversationView) => {
+        return { roster, change, goal, progress, summary, activeChildWorks, wait: (view: ConversationView) => waits.get(view.conversationId), recorded: (view: ConversationView) => {
             if (!recordedResults.has(view.conversationId))
                 recordedResults.set(view.conversationId, observeRecovery(() => controller.inspectRecordedDelegatedResults(view.conversationId)));
             return recordedResults.get(view.conversationId);
         } };
+    };
+    const delegatedRecoveryFor = (view: ConversationView, recorded: ReturnType<Controller['inspectRecordedDelegatedResults']> | undefined,
+        wait: ReturnType<Controller['inspectConversationWait']>) => {
+        if (view.inputNeeded || view.archived || view.deleted) return;
+        const nativeCandidates = new Set<string>();
+        if (wait) for (const [id, cache] of views) {
+            if (cache.dialogs.component && cache.registration && cache.registration === controller.getNativeHandle(id))
+                nativeCandidates.add(id);
+        }
+        const proofs = wait ? observeRecovery(() => controller.inspectDelegatedWaitDialogs(view.conversationId, nativeCandidates)) : undefined;
+        const dialogs = proofs?.filter(proof => proof.interrupted || views.get(proof.conversationId)?.dialogs.requestIds[0] === proof.requestId);
+        if (dialogs?.length) return { dialogs };
+        const stopped = stoppedDelegatedWaitTargets(wait, recorded);
+        const continuationFailure = wait?.continuationFailure;
+        const descendantContinuations = recorded?.descendantContinuationFailures;
+        if (!continuationFailure && !hasRecordedDelegatedStop(recorded) && !recorded?.unavailable && !recorded?.omitted && !recorded?.waitReviewUnavailable && !stopped.length) return;
+        const cleanup = stopped.find(item => item.cleanupUnconfirmed);
+        const descendantWait = wait ? recorded?.descendantWaitStops?.[0] : undefined;
+        const record = view.state === 'IDLE' ? recommendedDelegatedRecovery(recorded, undefined)
+            : view.state === 'WAITING' && wait && !wait.settlementUnconfirmed && !wait.omitted ? recommendedDelegatedRecovery(recorded, wait.targets)
+            : undefined;
+        const planningQuestion = record && 'planningQuestion' in record && controller.hasCurrentDelegatedPlanningQuestion(record);
+        const stoppedWait = cleanup ?? stopped.find(item => item.state === 'CANCELLED') ?? descendantWait;
+        return {record, planningQuestion, stoppedWait, continuationFailure, descendantContinuations,
+            waitReviewUnavailable: recorded?.waitReviewUnavailable};
     };
     const initiallyRetained = initialView.state === 'IDLE' && !!controller.inspectConversationInputStatus(initialView.conversationId);
     let noticeMessage = !initiallyRetained && guidance(initialView, !!initialView.workId && !!controller.inspectChangeActivity(initialView.workId)).length
@@ -428,6 +454,13 @@ export async function startConversationUI(options: StartConversationUIOptions): 
     let noticeRevision = 0, wrapNotice = false;
     const setNotice = (message: string, wrap = false) => { noticeMessage = message; wrapNotice = wrap; noticeRevision++; render(); };
     let selected = options.conversationId, second: string | null = null, closing = false, sequence = 0, terminalStarted = false;
+    let delegatedInputVisit: { child: string; parent: string; parentProject: ConversationView['projectId'] } | undefined;
+    const delegatedInputReturn = () => {
+        const visit = delegatedInputVisit;
+        if (!visit || visit.child !== selected || views.get(selected)?.dialogs.component) return;
+        const parent = observeRecovery(() => controller.inspectConversation(visit.parent));
+        if (parent && parent.projectId === visit.parentProject && isNavigationTarget(parent, selected)) return visit;
+    };
     const menuBorder = new DynamicBorder();
     const modelStatus: Component = {
         invalidate() { },
@@ -893,6 +926,7 @@ export async function startConversationUI(options: StartConversationUIOptions): 
             cache.historyRead = undefined;
         cache.generation = view.generation;
         const task = observations.summary(view), goal = observations.goal(view);
+        const delegated = observations.recorded(view);
         const managed = managedTasks.get(view.conversationId), preparingTask = task.preparationStatus;
         const notices = observeRecovery(() => controller.inspectNotifications(view.conversationId, { unreadOnly: true }));
         const roster = observations.roster;
@@ -971,8 +1005,21 @@ export async function startConversationUI(options: StartConversationUIOptions): 
         const current = responseStatus?.generation === view.generation && responseStatus.workId === view.workId ? responseStatus : undefined;
         const outcome = current?.directionRevision === undefined ? current : undefined;
         const activityContext = outcome ? task.idleOwnStatus : task.idleStatus;
+        const wait = observations.wait(view);
+        const recovery = delegatedRecoveryFor(view, delegated, wait);
+        const record = recovery?.record;
+        const delegatedStop = wait && record && !('assignmentProof' in record) ? record : undefined;
+        const interruptedDialog = recovery?.dialogs?.find(item => item.interrupted?.settlement === 'unconfirmed') ??
+            recovery?.dialogs?.find(item => item.interrupted);
+        const stoppedWaitLabel = interruptedDialog ? uiText(paneLocale, interruptedDialog.interrupted?.settlement === 'unconfirmed'
+            ? 'workRecovery.settlementUnconfirmed' : 'task.awaitedUnavailable') :
+            recovery?.continuationFailure ? uiText(paneLocale, 'delegated.continuationBlocked')
+            : recovery?.stoppedWait ? delegatedWaitStatus(recovery.stoppedWait, paneLocale)
+            : recovery?.descendantContinuations?.length ? uiText(paneLocale, 'delegated.nestedContinuationBlocked')
+            : recovery?.waitReviewUnavailable && !wait?.settlementUnconfirmed ? uiText(paneLocale, 'delegated.waitUnverified') : undefined;
         cache.pane.activity.update(view.state, { runId: progress?.runId ?? registration?.identity.runId, requestOwner: requestOwnerFor(cache, progress?.initialInputId ?? registration?.identity.initialInputId), preparationOwner: primarySend?.abort, preparing, preparingStatus, stage: progress?.stage, cancelling: cancellingResponse || cancellingHistory, cancellationLabel: cancellingHistory && !cancellingResponse ? uiText(cache.manualLocale ?? localeFor(view.conversationId), 'history.cancelling') : undefined, cancellingSend, editorKeyOwner: () => editorKeyOwner(cache!), showResponseInterrupt: view.conversationId === selected && escapeOwner(cache, view.state, () => awaitingRun)?.kind === 'response', operation: activityOperation,
-            providerActivity: registration?.providerActivity, waitingStatus: task.waitingStatus, waitAttention: task.waitAttention, locale: paneLocale, context: activityContext ?? null, setupNeeded, setupHandoff: setupNeeded && cache.plainDraft && canOfferRequestSetup(view, goal), outcome, pending: retainedInputs, inputNeeded: view.inputNeeded || cache.dialogs.requestIds.length > 0, error: errorStatus });
+            providerActivity: registration?.providerActivity, waitingStatus: stoppedWaitLabel ?? (delegatedStop ? delegatedStopText(delegatedStop, paneLocale).label : task.waitingStatus),
+            waitAttention: !!stoppedWaitLabel || !!delegatedStop || task.waitAttention, locale: paneLocale, context: activityContext ?? null, setupNeeded, setupHandoff: setupNeeded && cache.plainDraft && canOfferRequestSetup(view, goal), outcome, pending: retainedInputs, inputNeeded: view.inputNeeded || cache.dialogs.requestIds.length > 0, error: errorStatus });
         if (cache.interruptedPreview)
             relations.push(chrome('context', uiText(paneLocale, 'pane.interruptedPreview')));
         if (view.cancelledSendPreview && !cache.preparingSend && !view.archived && !view.deleted) {
@@ -1017,8 +1064,14 @@ export async function startConversationUI(options: StartConversationUIOptions): 
         const header = `${prefix}${visibleStatus}${simpleEntry ? '' : ' · #' + view.conversationId.slice(0, 8)}${view.inputNeeded ? ' · ' + uiText(paneLocale, 'pane.inputNeeded') : ''}${cache.dialogs.requestIds.length ? ' · ' + uiText(paneLocale, 'pane.dialogPending') : ''} · ${label(view)} · ${view.projectId ?? uiText(paneLocale, 'pane.noProject')}`;
         const attention = task.attention || retainedEntry || cache.dialogs.requestIds.length > 0;
         const heading = chrome(attention ? 'attention' : view.conversationId === selected ? 'active' : 'secondary', truncateToWidth(header.replace(/[\r\n]/g, ' '), paneWidth(), '…'));
-        cache.pane.recordedResultStatus.setText(recordedDelegatedResultText(observations.recorded(view), paneLocale, paneWidth(), terminal.rows < 24,
-            view.conversationId === selected ? keyLabel : undefined));
+        cache.pane.recordedResultStatus.setText(recordedDelegatedResultText(delegated, paneLocale, paneWidth(), terminal.rows < 24,
+            view.conversationId === selected && !delegatedInputReturn() ? keyLabel : undefined, recovery ? { record: recovery.record, input: !!recovery.dialogs,
+                interrupted: recovery.dialogs?.some(item => !!item.interrupted),
+                planningQuestion: !!recovery.planningQuestion,
+                stoppedWait: recovery.stoppedWait,
+                continuationBlocked: recovery.continuationFailure ? 'parent' :
+                    recovery.descendantContinuations?.length && !recovery.stoppedWait?.cleanupUnconfirmed ? 'delegated' : undefined,
+                confirm: getKeybindings().getKeys('tui.select.confirm').join('/') } : undefined));
         cache.pane.status.setText([heading, ...(simpleEntry ? [] : [chrome('secondary', compactConversationPath(roster, view.conversationId, paneWidth(), paneLocale))]), ...relations,
             ...task.lines.filter(text => text !== activityLabel).map(text => chrome(task.attention ? 'attention' : 'context', truncateToWidth(text, paneWidth(), '…'))),
             ...(cache.manualStatus ? [chrome(cache.manualPending ? 'attention' : 'context', cache.manualStatus)] : []),
@@ -1143,6 +1196,9 @@ export async function startConversationUI(options: StartConversationUIOptions): 
                 ...(keyOwner === 'composer' && primary.retainedReviewEntry ? [uiText(locale, 'input.reviewBeforeSend', { submit: submitKeyLabel() })] : []),
                 keyOwner === 'composer' && primary.roleFeedbackEntry ? uiText(locale, 'footer.roleFeedback', { submit: submitKeyLabel() }) : uiText(locale, 'footer.setup'),
                 uiText(locale, 'footer.commands', { key: keyLabel }),
+                ...(delegatedInputReturn() ? [uiText(locale, 'delegated.inputReturnKey', {
+                    key: keyLabel, confirm: getKeybindings().getKeys('tui.select.confirm').join('/'),
+                })] : []),
                 ...(available.some(view => view.conversationId === selectedView.parentId) ? [uiText(locale, 'footer.parent')] : []),
                 ...(available.some(view => view.parentId === selected) ? [uiText(locale, 'footer.child')] : []),
                 ...(completionCancel ? [uiText(locale, 'footer.closeSuggestions', { key: completionCancel })] : []),
@@ -1253,6 +1309,7 @@ export async function startConversationUI(options: StartConversationUIOptions): 
         if (!nextSecond || leftId === selected && second !== id)
             leftId = id;
         if (selected !== id) {
+            if (delegatedInputVisit?.child !== id) delegatedInputVisit = undefined;
             noticeMessage = '';
             noticeRevision++;
         }
@@ -1277,6 +1334,14 @@ export async function startConversationUI(options: StartConversationUIOptions): 
     };
     // These callers continue with an acknowledged notice or a governed action.
     const openHistoryBoundConversation = (id: string) => selectConversation(id, true);
+    const activateDelegatedReply = async (id: string, source: string, strictHistory = false) => {
+        const parentProject = controller.inspectConversation(source).projectId;
+        await selectConversation(id, strictHistory);
+        if (selected === id) {
+            delegatedInputVisit = {child:id, parent:source, parentProject};
+            render();
+        }
+    };
     const createAndSelectConversation = (argument: NewConversationScope = '', target = selected) => newConversationAction({
         controller, hostLanguage, chooseItems: chooseHost, isCurrent: id => !closing && selected === id,
         ready: () => { if (closing || hostDialog || switchPending)
@@ -2552,7 +2617,10 @@ export async function startConversationUI(options: StartConversationUIOptions): 
         ...inputCommands(retainedInputHost),
         ...workCommands({ controller, locale: localeFor, execute: executeHostCommand, choose: chooseHost, chooseItems: chooseHost, input: inputHost, show: showInspection, notice: setNotice, activate: selectConversation, isCurrent: target => !closing && selected === target }),
         ...changeCommands({ controller, execute: executeHostCommand, locale: localeFor, choose: chooseHost, chooseItems: chooseHost, show: showInspection, isCurrent: target => !closing && selected === target,
-            controls: { ...(options.models ? { models: options.models } : {}), ...(model ? { model } : {}), input: inputHost, draft: target => views.get(target)?.pane.editor.getExpandedText() ?? controller.inspectConversation(target).draft.text, notice: setNotice, prepareProjectSourceCheck, activateSource: openHistoryBoundConversation, launch: launchManaged } }),
+            controls: { ...(options.models ? { models: options.models } : {}), ...(applicationAccounts ? { accounts: applicationAccounts } : {}),
+                ...(model ? { model } : {}), input: inputHost, draft: target => views.get(target)?.pane.editor.getExpandedText() ?? controller.inspectConversation(target).draft.text, notice: setNotice, prepareProjectSourceCheck, activateSource: openHistoryBoundConversation,
+                activateDelegatedReply: (target, source) => activateDelegatedReply(target, source, true),
+                activateDelegatedReview: activateDelegatedReply, launch: launchManaged } }),
         ...readinessCommands({ controller, reviewInput, localRequest: localRequestStatus, restartArguments: options.restartArguments, hostLanguage, chooseItems: chooseHost, ...externalModel, ...(applicationAccounts ? { accounts: applicationAccounts } : {}), ...(options.models ? { models: options.models } : {}),
             isCurrent: target => !closing && selected === target, choose: chooseHost, show: showInspection, notice: setNotice, execute: executeSelectedCommand }),
         ...errorCommands({ controller, commandKeyLabel: keyLabel, isCurrent: target => !closing && selected === target,
@@ -2706,16 +2774,165 @@ export async function startConversationUI(options: StartConversationUIOptions): 
             return;
         noticeMessage = '';
         noticeRevision++;
+        const source = controller.inspectConversation(selected);
+        const readRecovery = (view: ConversationView) => delegatedRecoveryFor(view,
+            observeRecovery(() => controller.inspectRecordedDelegatedResults(view.conversationId)),
+            observeRecovery(() => controller.inspectConversationWait(view.conversationId)));
+        const recovery = readRecovery(source);
+        const returnVisit = delegatedInputReturn();
+        const originalScope = (current: ConversationView) => !current.archived && !current.deleted &&
+            current.generation === source.generation && current.workId === source.workId && current.projectId === source.projectId;
+        const recoveryIsCurrent = () => {
+            if (closing || selected !== source.conversationId) return false;
+            const current = controller.inspectConversation(selected);
+            return originalScope(current) && isDeepStrictEqual(recovery, readRecovery(current));
+        };
+        const openRecovery = async () => {
+            if (returnVisit) {
+                if (closing || delegatedInputReturn() !== returnVisit) {
+                    setNotice(uiText(localeFor(selected), 'delegated.inputReturnChanged'));
+                    return;
+                }
+                await selectConversation(returnVisit.parent);
+                return;
+            }
+            if (!recovery || !recoveryIsCurrent()) {
+                setNotice(uiText(localeFor(selected), 'delegated.resultChanged'));
+                return;
+            }
+            if (recovery.dialogs) {
+                const locale = localeFor(source.conversationId);
+                const hasInterruption = recovery.dialogs.some(item => !!item.interrupted);
+                const chosen = await chooseHost(uiText(locale, hasInterruption ? 'delegated.inputRecovery' : 'delegated.inputReview'), [
+                    { value: 'back', label: uiText(locale, 'result.back') },
+                    ...recovery.dialogs.map(dialog => {
+                        const child = controller.inspectConversation(dialog.conversationId);
+                        const label = conversationDisplayIdentity({
+                            conversationId: child.conversationId, userLabel: child.userLabel ?? child.label,
+                        });
+                        return { value: dialog.assignmentId, label: dialog.interrupted
+                            ? label + ' · ' + uiText(locale, 'delegated.inputInterrupted') : label };
+                    }),
+                ]);
+                if (!chosen || chosen === 'back') return;
+                const dialog = recovery.dialogs.find(item => item.assignmentId === chosen);
+                if (!dialog || !recoveryIsCurrent()) {
+                    setNotice(uiText(locale, 'delegated.inputChanged'));
+                    return;
+                }
+                if (dialog.interrupted) {
+                    const {workId, runId} = dialog.interrupted.identity;
+                    await showInspection(uiText(locale, 'delegated.inputInterrupted'), [
+                        uiText(locale, 'delegated.assignmentIdentity', {id: dialog.assignmentId}),
+                        uiText(locale, 'delegated.inputInterruptedIdentity', {workId, runId}),
+                        uiText(locale, dialog.interrupted.settlement === 'unconfirmed' ? 'workRecovery.settlementUnconfirmed' : 'delegated.inputInterruptedSettled'),
+                        uiText(locale, 'delegated.inputInterruptedNext'),
+                    ].join('\n'), {
+                        label: uiText(locale, 'notice.inspectOriginal'),
+                        async run() {
+                            if (!recoveryIsCurrent()) return setNotice(uiText(locale, 'delegated.inputChanged'));
+                            await executeHostCommand('/work ' + workId, source.conversationId);
+                        },
+                    });
+                    return;
+                }
+                await activateDelegatedReply(dialog.conversationId, source.conversationId);
+                return;
+            }
+            if (recovery.continuationFailure) {
+                const locale = localeFor(source.conversationId), t = translator(locale);
+                const reason = recovery.continuationFailure.reason;
+                await showInspection(t('delegated.continuationBlocked'), [
+                    t('delegated.continuationHeld'),
+                    t(reason === 'explicit-profile' ? 'delegated.continuationProfile' :
+                        reason === 'model-binding' ? 'delegated.continuationBinding' : 'delegated.continuationStart'),
+                ].join('\n'), {
+                    label: t('delegated.continuationActions'),
+                    async run() {
+                        if (!recoveryIsCurrent()) return setNotice(t('delegated.resultChanged'));
+                        const choice = await chooseHost(t('delegated.continuationActions'), [
+                            {value:'back',label:t('result.back')}, {value:'ready',label:t('delegated.parentReadiness')},
+                            {value:'results',label:t('delegated.resultsTitle')},
+                        ]);
+                        if (!choice || choice === 'back') return;
+                        if (!recoveryIsCurrent()) return setNotice(t('delegated.resultChanged'));
+                        await executeHostCommand(choice === 'ready' ? '/ready' : '/result --delegated', source.conversationId);
+                    },
+                });
+                return;
+            }
+            if (recovery.descendantContinuations?.length) {
+                const t = translator(localeFor(source.conversationId));
+                const failures = recovery.descendantContinuations;
+                const results = {value:'results',label:t('delegated.resultsTitle')};
+                const cleanupFirst = recovery.stoppedWait?.cleanupUnconfirmed;
+                const choice = await chooseHost(t(cleanupFirst ? 'delegated.resultsTitle' : 'delegated.nestedContinuationReview'), [
+                    {value:'back',label:t('result.back')},
+                    ...(cleanupFirst ? [results] : []),
+                    ...failures.map(failure => {
+                        const view = observeRecovery(() => controller.inspectConversation(failure.conversationId));
+                        const label = view ? conversationDisplayIdentity(view) : '#' + failure.conversationId.slice(0, 8);
+                        return {value:failure.assignmentId,label};
+                    }),
+                    ...(cleanupFirst ? [] : [results]),
+                ]);
+                if (!choice || choice === 'back') return;
+                if (!recoveryIsCurrent()) return setNotice(t('delegated.resultChanged'));
+                if (choice === 'results') {
+                    await executeHostCommand('/result --delegated', source.conversationId);
+                    return;
+                }
+                const failure = failures.find(entry => entry.assignmentId === choice);
+                if (!failure) return;
+                const child = controller.inspectConversation(failure.conversationId);
+                const label = conversationDisplayIdentity(child);
+                await showInspection(t('delegated.nestedContinuationBlocked'), [
+                    t('delegated.nestedContinuationTarget', {conversation:label}),
+                    t('delegated.assignmentIdentity', {id:failure.assignmentId}),
+                    t('delegated.nestedContinuationHeld'),
+                    t(failure.reason === 'explicit-profile' ? 'delegated.nestedContinuationProfile' :
+                        failure.reason === 'model-binding' ? 'delegated.continuationBinding' : 'delegated.continuationStart'),
+                    t('delegated.nestedContinuationReturn'),
+                ].join('\n'), {
+                    label: t('delegated.nestedContinuationReadiness'),
+                    async run() {
+                        if (!recoveryIsCurrent()) return setNotice(t('delegated.resultChanged'));
+                        await activateDelegatedReply(child.conversationId, source.conversationId);
+                        if (closing || selected !== child.conversationId) return;
+                        const current = observeRecovery(() => originalScope(controller.inspectConversation(source.conversationId))
+                            ? controller.inspectRecordedDelegatedResults(source.conversationId) : undefined);
+                        if (!current?.descendantContinuationFailures?.some(item => isDeepStrictEqual(item, failure))) {
+                            if (delegatedInputReturn()?.parent === source.conversationId)
+                                await selectConversation(source.conversationId);
+                            if (!closing) setNotice(t('delegated.resultChanged'));
+                            return;
+                        }
+                        await executeHostCommand('/ready', child.conversationId);
+                    },
+                });
+                return;
+            }
+            await executeHostCommand('/result --delegated', selected,
+                recovery.record ? { delegatedRecovery: { record: recovery.record, isCurrent: recoveryIsCurrent } } : undefined);
+        };
         const complete = (command?: ConversationCommand) => {
             hostDialog = undefined;
             hostDialogCancel = undefined;
             if (command) {
                 const cache = views.get(selected)!;
-                void runHostInteraction(() => runCommand(command), command === '/' ? '/help' : uiText(localeFor(selected), `command.${command}`)).catch(error => report(cache, error));
+                void runHostInteraction(command === 'recovery' ? openRecovery : () => runCommand(command),
+                    command === '/' ? '/help' : uiText(localeFor(selected), `command.${command}`)).catch(error => report(cache, error));
             }
             else render();
         };
-        hostDialog = new CommandMenu(command => complete(command), () => complete(), commandKey, localeFor(selected));
+        hostDialog = new CommandMenu(command => complete(command), () => complete(), commandKey, localeFor(selected),
+            returnVisit ? uiText(localeFor(selected), 'delegated.inputReturn') :
+            recovery ? recovery.dialogs ? uiText(localeFor(selected), recovery.dialogs.some(item => !!item.interrupted)
+                ? 'delegated.inputRecovery' : 'delegated.inputMenu')
+                : recovery.continuationFailure ? uiText(localeFor(selected), 'delegated.continuationReview')
+                : recovery.descendantContinuations?.length && !recovery.stoppedWait?.cleanupUnconfirmed ? uiText(localeFor(selected), 'delegated.nestedContinuationReview')
+                : recovery.record ? uiText(localeFor(selected), recovery.planningQuestion ? 'delegated.planningQuestionReview' : 'command.recovery') + ' · #' + recovery.record.assignmentId.slice(0, 8)
+                : uiText(localeFor(selected), 'delegated.resultsTitle') : undefined);
         hostDialogCancel = () => complete();
         render();
     };

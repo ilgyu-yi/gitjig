@@ -7,6 +7,7 @@ import { createHash } from 'node:crypto';
 import { SessionManager } from '@earendil-works/pi-coding-agent';
 import { Store } from '../../dist/controller/store.js';
 import { observeCapturedInputPresentation, observeHostInputPresentation, readCapturedInputPresentation, readNativeInputPresentation } from '../../dist/controller/captured-input-presentation.js';
+import { explicitWaitResultPrefix } from '../../dist/controller/consumed-wait.js';
 
 test('captured-input display follows the actual appended SDK message only', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'gitjig-captured-presentation-'));
@@ -41,15 +42,23 @@ test('captured-input display follows the actual appended SDK message only', asyn
     }
 });
 
-test('WAIT presentation binds the real appended entry and survives replacement of the live scheduler cursor', async () => {
+for (const scenario of ['legacy','mixed','complete','different handle','duplicate outcome key'])
+test('WAIT presentation binds the real appended entry and survives replacement of the live scheduler cursor · '+scenario, async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'gitjig-wait-presentation-'));
     const store = new Store(path.join(root, 'state.sqlite'));
     try {
         const manager = SessionManager.create(root, root), sessionId = manager.getSessionId();
         const previous = {conversationId:'C',workId:'W',runId:'previous',launchId:null,generation:1,directionRevision:1,initialInputId:'older-input'};
         const identity = {...previous,runId:'R',generation:2,directionRevision:2,initialInputId:'I'};
-        const wait = {runId:previous.runId,sourceIdentity:previous,waitHandles:['assignment'],resultIds:['result'],inputId:'I',sourceId:'S',directionRevision:2,newRunId:'R'};
-        const text = 'Opaque same-text example · original provider input';
+        const assignmentId=scenario==='different handle'?'unrelated':'assignment';
+        const entries=[{assignmentId,resultId:'result',conversationId:'child',workId:'child-work',outcome:scenario==='complete'?'COMPLETE':'UNAVAILABLE'},
+            {assignmentId:'peer',resultId:'peer-result',conversationId:'peer-conversation',workId:'peer-work',outcome:'COMPLETE'}];
+        const wait = {runId:previous.runId,sourceIdentity:previous,waitHandles:['assignment','peer'],resultIds:['result','peer-result'],
+            inputId:'I',sourceId:'S',directionRevision:2,newRunId:'R'};
+        const canonical=JSON.stringify(entries);
+        const text = scenario==='legacy'?'Opaque same-text example · original provider input':explicitWaitResultPrefix+
+            (scenario==='duplicate outcome key'?canonical.replace('"outcome":','"outcome":"COMPLETE","outcome":'):canonical);
+        const expected={kind:'wait-resume',...(scenario==='mixed'?{failedOutcomes:1}:{})};
         const origin = JSON.stringify({kind:'agent-conversation-input',actor:previous});
         store.run("INSERT INTO conversations VALUES('C',NULL,NULL,2,'RUNNING')");
         store.run("INSERT INTO sources VALUES('S','C',?,?)",origin,text);
@@ -64,10 +73,18 @@ test('WAIT presentation binds the real appended entry and survives replacement o
         observeHostInputPresentation(store,identity,manager,actual,text);
         const original = manager.appendMessage(actual);
         await Promise.resolve();
-        assert.deepEqual(read(original),{kind:'wait-resume'});
+        assert.deepEqual(read(original),expected);
 
         store.run("UPDATE conversation_state SET data=? WHERE conversation='C'",JSON.stringify({explicitContinuation:{...wait,newRunId:'new-run'}}));
-        assert.deepEqual(read(original),{kind:'wait-resume'});
+        assert.deepEqual(read(original),expected);
+        if (scenario==='mixed') {
+            const receipt=store.one("SELECT id,data FROM observations WHERE run='R'");
+            store.run("UPDATE observations SET data=json_set(data,'$.failedOutcomes',2) WHERE id=?",receipt.id);
+            assert.deepEqual(read(original),{kind:'wait-resume'});
+            store.run("UPDATE observations SET data=json_remove(data,'$.failedOutcomes') WHERE id=?",receipt.id);
+            assert.deepEqual(read(original),{kind:'wait-resume'});
+            store.run("UPDATE observations SET data=? WHERE id=?",receipt.data,receipt.id);
+        }
         const literal = message();
         observeHostInputPresentation(store,identity,manager,literal,text);
         const differentEntry = manager.appendMessage(literal);

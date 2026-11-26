@@ -6,12 +6,32 @@ import {acceptsDialogKeyEvent,commandNameKeys,hostFunctionKey,matchesCommandLett
 import {getKeybindings,setKeybindings,KeybindingsManager,TUI_KEYBINDINGS,matchesKey,isKeyRelease,isKeyRepeat} from '@earendil-works/pi-tui';
 import {HostCommands} from '../../dist/ui/host-commands.js';
 import {uiText} from '../../dist/ui/i18n.js';
+import {recommendedDelegatedRecovery} from '../../dist/ui/recorded-delegated-result.js';
 initTheme('dark',false);
 test('command menu accepts public physical-key sequences and Dubeolsik jamo, without treating composed text as one shortcut',()=>{
     for(const [input,want]of [['j','j'],['ㅓ','j'],['ᅥ','j'],['ㅔ','p'],['ㅊ','c'],['\x1b[12628::106;1u','j']]) {
         let selected;new CommandMenu(k=>selected=k,()=>{}).handleInput(input);assert.equal(selected,want,input);
     }
     assert.equal(matchesCommandLetter('ㄲ','r'),false);assert.equal(matchesCommandLetter('R','r'),false);assert.equal(matchesCommandLetter('한글','j'),false);assert.equal(matchesCommandLetter('\x1bj','j'),false);
+});
+test('the parent recommendation requires a complete view and one corresponding stop',()=>{
+    const first={assignmentId:'child',conversationId:'child-view',workId:'child-work',resultId:'child-result',limit:3};
+    const view={entries:[],requestFailures:[first],unavailable:false,omitted:false};
+    const direct={assignmentId:first.assignmentId,conversationId:first.conversationId,workId:first.workId,resultId:first.resultId,state:'UNAVAILABLE'};
+    assert.equal(recommendedDelegatedRecovery(view,[direct]),first);
+    assert.equal(recommendedDelegatedRecovery(view,[{...direct,workId:'different-work'}]),undefined);
+    assert.equal(recommendedDelegatedRecovery(view,[{...direct,resultId:undefined}]),undefined);
+    assert.equal(recommendedDelegatedRecovery(view,[direct,{...direct,assignmentId:'sibling',cleanupUnconfirmed:true}]),undefined);
+    assert.equal(recommendedDelegatedRecovery({...view,omitted:true},[direct]),undefined);
+    assert.equal(recommendedDelegatedRecovery({...view,unavailable:true},[direct]),undefined);
+    assert.equal(recommendedDelegatedRecovery({...view,waitReviewUnavailable:true},[direct]),undefined);
+    const nested=[first,{...first,resultId:'other-result',assignmentId:'other-child'}].map(entry=>({...entry,waitAssignmentId:'first-hop',currentWait:true}));
+    const firstHop=[{...direct,assignmentId:'first-hop',state:'WAITING'}];
+    assert.equal(recommendedDelegatedRecovery({...view,requestFailures:nested},firstHop),undefined);
+    assert.equal(recommendedDelegatedRecovery({...view,requestFailures:[nested[0]]},firstHop),nested[0]);
+    assert.equal(recommendedDelegatedRecovery({...view,requestFailures:[nested[0]],
+        descendantWaitStops:[{...direct,assignmentId:'another-descendant',resultId:undefined}]},firstHop),undefined);
+    assert.equal(recommendedDelegatedRecovery({...view,requestFailures:[{...nested[0],currentWait:undefined}]},firstHop),undefined);
 });
 test('Korean command names execute and complete; arguments, unknown tokens and literal messages keep their meaning',async()=>{
     let argument;const registry=new HostCommands([{name:'project',descriptionId:'command.description.project',argumentHint:'[id]',run:async value=>{argument=value;}}]);

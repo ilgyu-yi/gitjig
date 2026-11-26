@@ -25,6 +25,7 @@ async function fixture(t,{unallocated=false}={}){
 }
 test('public reclaim retires exact interrupted undispatched role input and enables public model edit without changing original evidence',async t=>{
  const f=await fixture(t),old=f.immutable(),models=new ApplicationModels(f.c);
+ assert.equal(f.c.inspectApplicationMutationBlocker()?.next,'role-reclaim');
  await assert.rejects(models.setRole('planner',null),/queued or retained/);
  await f.reclaim();assert.deepEqual(f.immutable(),old);
  assert.equal(f.c.inspectConversation(f.cid).state,'IDLE');

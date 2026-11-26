@@ -2,6 +2,7 @@ import type { ConversationView } from '../controller/interaction-types.js';
 import { roleRequestLimit } from '../workflow/execution-bounds.js';
 import type { ChangeView, PlanningFailureView, RoleRequestLimitView } from '../controller/change-types.js';
 import type { ProviderUsageLimit } from '../workflow/provider-failure.js';
+import type { Role } from '../workflow/types.js';
 import { providerUsageLimit } from '../workflow/provider-failure.js';
 import { uiText, type UiLocale } from './i18n.js';
 
@@ -45,13 +46,15 @@ export function providerFailurePresentation(failure: ProviderUsageLimit | undefi
 }
 
 /** Format the original provider observation for an exact, read-only result. */
-export function recordedQuotaPresentation(resetsAt: number | null, work: string, locale: UiLocale) {
+export function recordedQuotaPresentation(resetsAt: number | null, work: string, locale: UiLocale, role?: Role) {
     const reset = resetsAt === null ? undefined : new Intl.DateTimeFormat(locale === 'ko' ? 'ko-KR' : 'en-CA', {
         year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23', timeZoneName: 'longOffset',
     }).format(new Date(resetsAt * 1000));
     const timing = reset ? uiText(locale, 'planningFailure.quotaReset', { reset }) : uiText(locale, 'planningFailure.quotaUnknownReset');
+    const label = role && uiText(locale, `model.roleName.${role}`);
     return {title: uiText(locale, 'planningFailure.quotaTitle'), summary: uiText(locale, 'planningFailure.quotaSummary'),
-        details: timing + '\n' + uiText(locale, 'planningFailure.quotaDetails', { work })};
+        details: [...(label ? [uiText(locale, 'planningFailure.quotaRole', {role: label})] : []),
+            timing, uiText(locale, 'planningFailure.quotaDetails', { work })].join('\n')};
 }
 
 export function roleRequestLimitPresentation(failure: RoleRequestLimitView | undefined, work: string, locale: UiLocale) {

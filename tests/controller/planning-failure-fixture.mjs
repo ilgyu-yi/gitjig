@@ -48,8 +48,8 @@ export function seedEarlierFindings(c,workId) {
   JSON.stringify({kind:'finding',occurrence:'unbound-finding',state:'pending'}));
 }
 
-export function seedLocalRoleRequestLimit(c,workId,role='challenger') {
- const f=seedPlanningFailure(c,workId,role),s=c.store;
+export function seedLocalRoleRequestLimit(c,workId,role='challenger',launch) {
+ const f=seedPlanningFailure(c,workId,role,launch),s=c.store;
  const requestLimit={version:1,kind:'role-request-limit',used:16,limit:16};
  const issues=['PROVIDER:HOST_CONTEXT_GUARD:Error: Provider request cap exceeded:16'];
  s.run("UPDATE role_launches SET data=json_set(data,'$.bounds.maxProviderRequests',16) WHERE id=?",f.launch);

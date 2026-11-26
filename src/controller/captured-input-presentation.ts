@@ -4,10 +4,13 @@ import type { NativeIdentity } from './interaction-types.js';
 import type { PreparedContextComparison } from './input-context.js';
 import type { Store } from './store.js';
 import { sameNativeIdentity } from './native-identity.js';
+import { explicitWaitResultPrefix } from './consumed-wait.js';
+import { parseUniqueJson } from '../workflow/json.js';
 
 type UserMessage = Extract<AgentSession['messages'][number], { role: 'user' }>;
 export type CapturedInputPresentation = { text: string; fileCount: number };
-export type NativeInputPresentation = CapturedInputPresentation | { kind: 'goal-start'; objective: string } | { kind: 'wait-resume' };
+export type NativeInputPresentation = CapturedInputPresentation | { kind: 'goal-start'; objective: string }
+    | { kind: 'wait-resume'; failedOutcomes?: number };
 
 const digest = (value: string) => createHash('sha256').update(value).digest('hex');
 const key = (conversationId: string, sessionId: string, entryId: string) =>
@@ -31,7 +34,7 @@ export function observeCapturedInputPresentation(store: Store, identity: NativeI
 }
 
 function observeInputEntry(store: Store, identity: NativeIdentity, manager: SessionManager, message: UserMessage, text: string,
-    presentation: Record<string, string>): void {
+    presentation: Record<string, string | number>): void {
     if (singleText(message) !== text) return;
     const parent = manager.getLeafId(), sessionId = manager.getSessionId();
     queueMicrotask(() => {
@@ -56,6 +59,33 @@ function originalPlainInput(store: Store, conversationId: string, runId: string,
           AND s.raw=i.text`, runId, conversationId, sessionId, conversationId);
 }
 
+/** Classify only the exact ordered operands of the admitted host continuation. */
+function failedWaitOutcomeCount(text: string, handles?: readonly unknown[], results?: readonly unknown[]): number | undefined {
+    if (!text.startsWith(explicitWaitResultPrefix)) return;
+    try {
+        const entries = parseUniqueJson(text.slice(explicitWaitResultPrefix.length));
+        if (!Array.isArray(entries) || !entries.length || entries.length > 64 ||
+            handles && (entries.length !== handles.length || entries.length !== results?.length)) return;
+        const id = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && value.length <= 128;
+        const assigned = new Set<string>(), publications = new Set<string>();
+        let failed = 0;
+        for (const [index, item] of entries.entries()) {
+            if (!item || typeof item !== 'object' || Array.isArray(item)) return;
+            const entry = item as Record<string, unknown>;
+            const {assignmentId, resultId, outcome} = entry;
+            if (Object.keys(entry).some(key => !['assignmentId','resultId','conversationId','workId','outcome','historicalDiagnostic'].includes(key)) ||
+                !id(assignmentId) || !id(resultId) || !id(entry.conversationId) || !id(entry.workId) ||
+                assigned.has(assignmentId) || publications.has(resultId) ||
+                handles && (assignmentId !== handles[index] || resultId !== results?.[index]) ||
+                outcome !== 'COMPLETE' && outcome !== 'UNAVAILABLE') return;
+            assigned.add(assignmentId);
+            publications.add(resultId);
+            if (outcome === 'UNAVAILABLE') failed++;
+        }
+        return failed;
+    } catch { return undefined; }
+}
+
 /** Only the initial host-owned input held by this actual run may receive a display receipt. */
 export function observeHostInputPresentation(store: Store, identity: NativeIdentity, manager: SessionManager, message: UserMessage, text: string): void {
     try {
@@ -64,6 +94,7 @@ export function observeHostInputPresentation(store: Store, identity: NativeIdent
             return;
         const origin = JSON.parse(input.origin);
         let kind: 'goal-start' | 'wait-resume';
+        let failedOutcomes: number | undefined;
         if (origin.kind === 'owner-conversation-input' && input.goalStart &&
             readOriginalGoalObjective(store, identity.conversationId, input)) {
             kind = 'goal-start';
@@ -79,8 +110,10 @@ export function observeHostInputPresentation(store: Store, identity: NativeIdent
                 wait.waitHandles.length > 64 || wait.waitHandles.length !== wait.resultIds.length)
                 return;
             kind = 'wait-resume';
+            failedOutcomes = failedWaitOutcomeCount(input.text, wait.waitHandles, wait.resultIds);
         } else return;
-        observeInputEntry(store, identity, manager, message, text, { kind, inputId: input.id, sourceId: input.source, originSha256: digest(input.origin) });
+        observeInputEntry(store, identity, manager, message, text, { kind, inputId: input.id, sourceId: input.source, originSha256: digest(input.origin),
+            ...(failedOutcomes ? {failedOutcomes} : {}) });
     } catch { /* Optional presentation evidence must not affect native input accounting. */ }
 }
 
@@ -98,8 +131,11 @@ export function readNativeInputPresentation(store: Store, conversationId: string
         if (!input || input.id !== receipt.inputId || input.source !== receipt.sourceId || input.text !== nativeText || digest(input.origin) !== receipt.originSha256)
             return;
         const origin = JSON.parse(input.origin);
-        if (receipt.kind === 'wait-resume' && origin.kind === 'agent-conversation-input')
-            return { kind: 'wait-resume' };
+        if (receipt.kind === 'wait-resume' && origin.kind === 'agent-conversation-input') {
+            const failedOutcomes = receipt.failedOutcomes;
+            return { kind: 'wait-resume', ...(Number.isSafeInteger(failedOutcomes) && failedOutcomes > 0 &&
+                failedWaitOutcomeCount(nativeText) === failedOutcomes ? {failedOutcomes} : {}) };
+        }
         if (receipt.kind === 'goal-start' && origin.kind === 'owner-conversation-input' && input.goalStart) {
             const objective = readOriginalGoalObjective(store, conversationId, input);
             if (objective) return { kind: 'goal-start', objective };

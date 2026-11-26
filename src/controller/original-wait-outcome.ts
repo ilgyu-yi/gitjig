@@ -5,6 +5,7 @@ import { coordinationBytes, coordinatorReportRequiredFailure, inspectConversatio
 import { sameNativeIdentity } from './native-identity.js';
 import { inspectAssignedWorkObligations } from './assigned-work-provenance.js';
 import { isWorkSettlementUnconfirmed } from './work-recovery.js';
+import { currentAssignmentResultId } from './assignment-result-attempt.js';
 
 const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const clean = (value: unknown) => ['removed', 'not-allocated', 'unbound'].includes(value as string);
@@ -138,7 +139,7 @@ export function originalFailedWaitOutcome(s: Store, conversationId: string, assi
         if (!assignment || assignment.state !== 'UNAVAILABLE' || assignment.source_conversation !== conversationId || !assignment.work) return { state: 'held' };
         const a = object(assignment.data), work = s.one('SELECT * FROM works WHERE id=?', assignment.work);
         const ordinary = a.operation === 'investigate';
-        if ((!ordinary && a.operation !== 'change') || a.contextAssignment || a.contextReentry || a.delegationRoot !== delegation.rootWorkId ||
+        if ((!ordinary && a.operation !== 'change') || !currentAssignmentResultId(a) || a.contextAssignment || a.contextReentry || a.delegationRoot !== delegation.rootWorkId ||
             !work || isWorkSettlementUnconfirmed(work.state) || ['CANCELLED', 'INTERRUPTED'].includes(work.state) || a.projectId !== work.project || !delegation.projectIds.includes(work.project)) return { state: 'held' };
         const wd = object(work.data), original = s.one('SELECT * FROM sources WHERE id=?', work.source), instruction = s.one('SELECT * FROM sources WHERE id=?', a.instructionsSource);
         if (work.predecessor !== null || work.lineage !== work.id || wd.contextOrigin || wd.contextAssignment || wd.contextFamilyRoot || wd.kind !== (ordinary ? 'ordinary-conversation' : 'governed-change') || wd.conversation !== assignment.target || !original || !instruction ||
@@ -186,7 +187,7 @@ export function originalFailedWaitOutcome(s: Store, conversationId: string, assi
                 criteriaRefreshSourceId: object(s.one('SELECT data FROM change_state WHERE work=?', work.id).data).criteriaRefresh.sourceId,
                 meaning: 'Previously settled failure retained across owner workflow-rule adoption. No current-epoch execution, successful standing or task retry is granted by this historical observation alone.'};
         }
-        if (a.resultId !== expected || s.one("SELECT id FROM conversation_results WHERE conversation=? AND json_extract(data,'$.assignmentId')=? ORDER BY rowid DESC LIMIT 1", assignment.target, assignmentId)?.id !== expected)
+        if (currentAssignmentResultId(a) !== expected || s.one("SELECT id FROM conversation_results WHERE conversation=? AND json_extract(data,'$.assignmentId')=? ORDER BY rowid DESC LIMIT 1", assignment.target, assignmentId)?.id !== expected)
             return { state: 'held' };
         const storedPublication = s.one('SELECT id,conversation,work FROM conversation_results WHERE id=?', expected);
         if (!storedPublication || storedPublication.id !== expected || storedPublication.conversation !== assignment.target || storedPublication.work !== work.id) return { state: 'held' };

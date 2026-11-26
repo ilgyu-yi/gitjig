@@ -133,6 +133,8 @@ export class NativePane {
                 if ('fileCount' in view) inputs.set(message, view.text + '\n' + uiText(this.locale, 'pane.capturedFiles', {count: view.fileCount}));
                 else inputs.set(message, {hostText: view.kind === 'goal-start'
                     ? uiText(this.locale, 'pane.goalStarted', {objective: plainTerminalText(view.objective)})
+                    : view.failedOutcomes === 1 ? uiText(this.locale, 'pane.waitResumedFailure')
+                    : view.failedOutcomes ? uiText(this.locale, 'pane.waitResumedFailures', {count: view.failedOutcomes})
                     : uiText(this.locale, 'pane.waitResumed')});
             }
         }

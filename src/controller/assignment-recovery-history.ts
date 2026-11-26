@@ -9,7 +9,7 @@ const object = (raw: string): Record<string, any> => {
         throw Error('Original assignment object unavailable');
     return value as Record<string, any>;
 };
-const envelope = (column = 'data') => bounded(`json_remove(${column},'$.result','$.resultId','$.error')`,65536);
+const envelope = (column = 'data') => bounded(`json_remove(${column},'$.result','$.resultId','$.error','$.publishedForInputId','$.launchResultUnavailable')`,65536);
 /** Run/work and actor/input generations belong to separate original ordinal domains. */
 function ordinaryActorRun(store: Store, actor: NativeIdentity) {
     if (!Number.isSafeInteger(actor?.generation) || actor.generation < 1)
@@ -36,7 +36,7 @@ function ordinaryActorRun(store: Store, actor: NativeIdentity) {
     return run;
 }
 const immutable = (data: Record<string, unknown>) => {
-    const { authorityRecovery, cancellationSource, reentries, result, resultId, error, ...rest } = data;
+    const { authorityRecovery, cancellationSource, reentries, result, resultId, error, publishedForInputId, launchResultUnavailable, ...rest } = data;
     if (data.contextAssignment)
         delete rest.contextReentry;
     return rest;

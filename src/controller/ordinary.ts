@@ -35,6 +35,7 @@ import { firstNativeUserMatches, interruptedRuntimeMatches, type InterruptedInpu
 import { admitContextWork } from './context-origin.js';
 import { validateContextAssignmentLaunch, ContextAssignmentRetained } from './context-coordination.js';
 import { conversationLanguagePolicy } from './conversation-language.js';
+import { captureWaitContinuationFailure, type WaitContinuationFailure } from './conversation-progress.js';
 interface OrdinaryHost {
     busyWork?(id: string): boolean;
     goals: Pick<import("./goals.js").Goals, "admit" | "context" | "assertCurrent" | "settled" | "canResume" | "isPendingReview" | "attach" | "observeDependencies" | "ownerRootProfileForInput">;
@@ -351,7 +352,10 @@ export class Ordinary {
             const published = inspectConversationResult(this.h.store, id).result as ConversationTurnResult;
             if (assignment && assignment.state !== 'CANCELLED') {
                 const delivered = published.status === 'delivered' && (!published.answer || published.answer.state === 'delivered');
-                this.h.store.run('UPDATE conversation_assignments SET state=?,work=?,data=? WHERE id=?', delivered ? 'COMPLETE' : 'UNAVAILABLE', result.workId, JSON.stringify({ ...JSON.parse(assignment.data), result: published, resultId: id }), assignment.id);
+                const current = JSON.parse(assignment.data), reentry = current.reentries?.at(-1);
+                delete current.launchResultUnavailable;
+                this.h.store.run('UPDATE conversation_assignments SET state=?,work=?,data=? WHERE id=?', delivered ? 'COMPLETE' : 'UNAVAILABLE', result.workId,
+                    JSON.stringify({ ...current, result: published, resultId: id, ...(reentry ? {publishedForInputId: reentry.inputId} : {}) }), assignment.id);
                 if (delivered)
                     this.h.store.run('UPDATE conversation_dependencies SET state=? WHERE assignment=?', 'RESOLVED', assignment.id);
             }
@@ -363,6 +367,7 @@ export class Ordinary {
         const row = this.h.store.one('SELECT work,resource,data,direction FROM conversation_state WHERE conversation=?', cid), view = this.h.interactions.inspect(cid);
         const data = JSON.parse(row.data);
         delete data.continuationError;
+        delete data.continuationFailure;
         const work = row.work ? this.h.store.one('SELECT state,epoch,generation FROM works WHERE id=?', row.work) : null;
         const results = Array.isArray(data.waitHandles) ? data.waitHandles.map((id: string) => { const a = this.h.store.one('SELECT * FROM conversation_assignments WHERE id=?', id); return [a, a ? this.h.store.one("SELECT id FROM conversation_results WHERE conversation=? AND json_extract(data,'$.assignmentId')=? ORDER BY rowid DESC LIMIT 1", a.target, id) : null]; }) : null;
         const inputs = this.h.store.all("SELECT id,state FROM conversation_inputs WHERE conversation=? AND state IN ('QUEUED','INITIAL_RESERVED','NATIVE_PENDING','RECONCILIATION_REQUIRED') ORDER BY rowid", cid);
@@ -405,7 +410,7 @@ export class Ordinary {
             if (!this.h.goals.canResume(cid))
                 continue;
             const token = this.waitFingerprint(cid);
-            const diagnose = (message: string) => {
+            const diagnose = (reason: WaitContinuationFailure, message: string) => {
                 if (this.quiesced)
                     return;
                 try {
@@ -414,8 +419,15 @@ export class Ordinary {
                     if (this.waitFingerprint(cid) !== token)
                         return;
                     const current = this.h.store.one('SELECT data,resource FROM conversation_state WHERE conversation=?', cid);
-                    if (current.resource === 'WAITING')
-                        this.h.store.run('UPDATE conversation_state SET data=? WHERE conversation=?', JSON.stringify({ ...JSON.parse(current.data), continuationError: message }), cid);
+                    if (current.resource !== 'WAITING') return;
+                    const failure = captureWaitContinuationFailure(this.h.store, cid, reason);
+                    const state = JSON.parse(current.data);
+                    const changed = JSON.stringify(state.continuationFailure) !== JSON.stringify(failure);
+                    if (changed || state.continuationError !== message) {
+                        this.h.store.run('UPDATE conversation_state SET data=? WHERE conversation=?', JSON.stringify({ ...state,
+                            continuationError: message, continuationFailure: failure }), cid);
+                        if (changed) this.h.interactions.assignmentChanged(cid);
+                    }
                 }
                 catch { /* A changed or closed owner receives no stale write. */ }
             };
@@ -430,7 +442,7 @@ export class Ordinary {
                 else {
                     const model = explicit ? explicit.request.model : this.models.get(cid);
                     if (!model) {
-                        diagnose('EXPLICIT_MODEL_REQUIRED: resume this retained conversation with its original explicit profile');
+                        diagnose('explicit-profile', 'EXPLICIT_MODEL_REQUIRED: resume this retained conversation with its original explicit profile');
                         continue;
                     }
                     if (mode?.kind === 'explicit' && (mode.provider !== model.provider || mode.modelId !== model.modelId))
@@ -439,7 +451,7 @@ export class Ordinary {
                 }
             }
             catch {
-                diagnose('APPLICATION_MODEL_UNAVAILABLE: repair the retained target model mode');
+                diagnose('model-binding', 'APPLICATION_MODEL_UNAVAILABLE: repair the retained target model mode');
                 continue;
             }
             this.pendingResumes.add(cid);
@@ -447,7 +459,7 @@ export class Ordinary {
                 explicit?.validate();
                 return this.runInner(resolved);
             }).catch(() => {
-                diagnose('APPLICATION_CONTINUATION_UNAVAILABLE: inspect the retained model, runtime, native history and pending inputs; authorization is preserved');
+                diagnose('startup', 'APPLICATION_CONTINUATION_UNAVAILABLE: inspect the retained model, runtime, native history and pending inputs; authorization is preserved');
             }).finally(() => {
                 this.pendingResumes.delete(cid);
                 if (this.quiesced)
@@ -676,7 +688,10 @@ export class Ordinary {
                                     if (published.assignmentId !== assignmentId || published.conversationId !== cid || published.workId !== assignment.work)
                                         throw Error('Assigned result publication correspondence changed');
                                     const complete = reviewReady && !hold && (published.result as { reviewReady?: boolean }).reviewReady === true;
-                                    const data = JSON.stringify({ ...JSON.parse(assignment.data), result: published.result, resultId, ...(hold ? { error: hold } : {}) });
+                                    const current = JSON.parse(assignment.data), reentry = current.reentries?.at(-1);
+                                    delete current.launchResultUnavailable;
+                                    const data = JSON.stringify({ ...current, result: published.result, resultId,
+                                        ...(reentry ? { publishedForInputId: reentry.inputId } : {}), ...(hold ? { error: hold } : {}) });
                                     if (Buffer.byteLength(data) > 64 * 1024) throw Error('Governed assignment metadata exceeds64KiB');
                                     this.h.store.run('UPDATE conversation_assignments SET state=?,data=? WHERE id=?', complete ? 'COMPLETE' : 'UNAVAILABLE', data, assignmentId);
                                     if (complete)
@@ -693,7 +708,8 @@ export class Ordinary {
                                 }
                                 if (operation === 'change' && !ownsAssignment() || this.h.store.one('SELECT state FROM conversation_assignments WHERE id=?', assignmentId).state === 'CANCELLED')
                                     return;
-                                this.h.store.run('UPDATE conversation_assignments SET state=?,data=? WHERE id=?', 'UNAVAILABLE', JSON.stringify({ ...JSON.parse(this.h.store.one('SELECT data FROM conversation_assignments WHERE id=?', assignmentId).data), error: String(error) }), assignmentId);
+                                this.h.store.run('UPDATE conversation_assignments SET state=?,data=? WHERE id=?', 'UNAVAILABLE', JSON.stringify({ ...JSON.parse(this.h.store.one('SELECT data FROM conversation_assignments WHERE id=?', assignmentId).data), error: String(error), launchResultUnavailable: true }), assignmentId);
+                                this.h.interactions.assignmentChanged(a.identity.conversationId);
                                 this.h.observe(a.runId, { kind: 'assignment-launch-unavailable', conversationId: cid, error: String(error) });
                                 this.h.goals.observeDependencies();
                             }), true);
@@ -777,7 +793,21 @@ export class Ordinary {
                 }) };
             const maxProviderRequests = this.h.options.maxProviderRequests ?? defaultRoleBounds.maxProviderRequests;
             let requests = 0;
-            pi = await createPiSession({ host, operations, requestLanguagePolicy: () => conversationLanguagePolicy(this.h.store, a.identity.conversationId, !!JSON.parse(a.work.data).assignmentId, !!goal?.strict), ...(controls ? { coordination: controls } : {}), ...(goal ? { goal: goal.controls, readOnly: goal.strict } : {}), model: options.model, maxReadBytes: 1024 * 1024, systemPrompt: 'Configured integration grants (not proof of procedure or current authority): ' + JSON.stringify(goal?.strict ? { reviewOnly: true } : this.h.effectContext(a.work.id)) + '. Current host-bound scope: ' + JSON.stringify({ projectId: a.work.project, workId: a.work.id, scopeTransition: JSON.parse(a.work.data).scopeTransition ?? null }) + ' Older history may describe prior scopes; only current owned operations address current project. ' + ' This is an ordinary conversation and read-only investigation. Answer the retained owner input naturally; preserve uncertainty and earlier obligations. Project writes, governed implementation, review-ready standing, publication and merge require the separate governed workflow. Project-unbound conversations cannot execute or access project/host files.' + (goal ? '\n' + goal.systemPrompt : ''), beforeModelRequest: async (manager) => {
+            const systemPrompt = [
+                'Configured integration grants (not proof of procedure or current authority): ' +
+                    JSON.stringify(goal?.strict ? {reviewOnly:true} : this.h.effectContext(a.work.id)) + '.',
+                'Current host-bound scope: ' + JSON.stringify({projectId:a.work.project, workId:a.work.id,
+                    scopeTransition:JSON.parse(a.work.data).scopeTransition ?? null}),
+                'Older history may describe prior scopes; only current owned operations address current project.',
+                'This is an ordinary conversation and read-only investigation. Answer the retained owner input naturally; preserve uncertainty and earlier obligations. Project writes, governed implementation, review-ready standing, publication and merge require the separate governed workflow. Project-unbound conversations cannot execute or access project/host files.',
+                ...(controls && !goal?.strict ? [
+                    'When the owner asks why a delegated task stopped, inspect its exact named conversation_status and explain the current hold and next action. A returned originalRecovery describes the recorded local model request ceiling or unverified evidence for that exact assignment. Diagnosis alone does not request execution.',
+                    'If the task was delegated through another conversation, name your exact direct coordinator in conversation_status and read descendantRecovery. Describe the recorded outcome and point the owner to its original coordinator or /result --delegated. Descendant recovery observations contain no resume operands.',
+                    'Use a current exact resume route only for the original assignment when the owner explicitly asks to continue under the same instructions. Use the unchanged resume fields from conversation_status. If the route is held or missing, explain the required owner action. If the original is ambiguous, ask which original task they mean. Do not create a substitute task, change models, increase allowance, or retry another assignment in response.',
+                ] : []),
+                ...(goal ? [goal.systemPrompt] : []),
+            ].join('\n');
+            pi = await createPiSession({ host, operations, requestLanguagePolicy: () => conversationLanguagePolicy(this.h.store, a.identity.conversationId, !!JSON.parse(a.work.data).assignmentId, !!goal?.strict), ...(controls ? { coordination: controls } : {}), ...(goal ? { goal: goal.controls, readOnly: goal.strict } : {}), model: options.model, maxReadBytes: 1024 * 1024, systemPrompt, beforeModelRequest: async (manager) => {
                     this.h.entry(a.runId);
                     this.h.goals.assertCurrent(a.identity);
                     if (handle.abort.signal.aborted)

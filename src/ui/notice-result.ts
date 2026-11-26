@@ -2,7 +2,7 @@ import { plainTerminalText } from './chrome.js';
 import { hasCleanCleanup, responseOutcome } from './conversation-activity.js';
 import { escapeJsonControls } from './inspection-text.js';
 import { recordedQuotaPresentation } from './planning-failure-presentation.js';
-import { validProviderReset } from '../workflow/provider-failure.js';
+import { providerUsageLimitRole, validProviderReset } from '../workflow/provider-failure.js';
 import { uiText, type UiLocale } from './i18n.js';
 import type { ConversationTurnResult } from '../controller/interaction-types.js';
 
@@ -43,8 +43,9 @@ export function noticeResultPresentation(publication: PublishedNoticeResult, loc
             const unknown = body.state === 'UNKNOWN' || matchingSummary?.state === 'UNKNOWN';
             outcome = recordedGovernedOutcome(body.phase, body.reviewReady, unknown, locale);
             const reset = matchingSummary?.providerUsageLimitReset;
+            const affectedRole = providerUsageLimitRole(matchingSummary?.providerUsageLimitRole);
             const quota = !unknown && body.phase === 'BLOCKED' && !body.reviewReady && (reset === null || validProviderReset(reset))
-                ? recordedQuotaPresentation(reset, work, locale) : undefined;
+                ? recordedQuotaPresentation(reset, work, locale, affectedRole) : undefined;
             const blockers = matchingSummary?.blocked ?? body.blocked;
             if (quota)
                 notes.push(quota.title, quota.details);

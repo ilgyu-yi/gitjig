@@ -5,6 +5,7 @@ import { modelContextPresentation } from './model-context-presentation.js';
 import { producerFailurePresentation } from './planning-failure-presentation.js';
 import type { Controller } from '../controller/controller.js';
 import type { ApplicationModels } from '../app/models.js';
+import type { ApplicationAccounts } from '../app/accounts.js';
 import type { PiModelSelection } from '../pi/session.js';
 import type { ChangeView } from '../controller/change-types.js';
 import { isWorkSettlementUnconfirmed, managedStartExecutionHold } from '../controller/work-recovery.js';
@@ -19,11 +20,13 @@ import { translator, uiText, type UiLocale } from './i18n.js';
 import { conversationDisplayIdentity, plainTerminalText } from './chrome.js';
 import { chooseUiItem, type UiChoiceHost } from './choices.js';
 import { noticeResultPresentation, recordedGovernedOutcome } from './notice-result.js';
-import { recordedDelegatedEvidence } from './recorded-delegated-result.js';
+import { delegatedStopText, delegatedWaitStatus, recordedDelegatedEvidence, stoppedDelegatedWaitTargets, type DelegatedStop } from './recorded-delegated-result.js';
 import { escapeDisplayControls, escapeJsonControls, quoteText } from './inspection-text.js';
 import { ProjectSourceError, readProjectSource, type ProjectSourceIdentity } from './project-source.js';
 import { ownerActivationGuidance } from './startup-guidance.js';
 import { inspectWorkResumeEntry, workOriginLifecycle } from './work-resume-entry.js';
+import { inspectOriginalPrerequisites, workOriginGuidance, workRecoveryGuidance } from './work-recovery-guidance.js';
+import { ApplicationStartup } from '../app/startup.js';
 import { observeRecovery } from './recovery-navigation.js';
 import { acceptsSingleLineInput } from './product-input.js';
 interface ChangeHost extends UiChoiceHost, ReviewPageHost {
@@ -33,23 +36,27 @@ interface ChangeHost extends UiChoiceHost, ReviewPageHost {
     locale?(target: string): UiLocale;
     controls?: {
         models?: ApplicationModels;
+        accounts?: ApplicationAccounts;
         model?: PiModelSelection;
         input(title: string, value: string, description?: string): Promise<string | undefined>;
         draft(target: string): string;
         notice(text: string): void;
         prepareProjectSourceCheck?(target: string): (() => void) | undefined;
         activateSource(target: string): Promise<void>;
+        activateDelegatedReply?(target: string, source: string): Promise<void>;
+        activateDelegatedReview?(target: string, source: string): Promise<void>;
         launch(target: string, task: Promise<ChangeView>, workId?: string, submission?: HostCommandContext['submission']): void;
     };
 }
 type ResultHost = Omit<ChangeHost, 'controls'> & {
-    controls?: Pick<NonNullable<ChangeHost['controls']>, 'activateSource' | 'notice'>;
+    controls?: Pick<NonNullable<ChangeHost['controls']>, 'activateSource' | 'activateDelegatedReply' | 'notice'>;
 };
 
 /** Read and route one exact recorded result without nesting its containing work menu. */
 export async function reviewChangeResult(host: ResultHost, id: string, target: string, sourceGuard: () => void, {
-    context, fromWork = false, capture, explicitId = false,
-}: { context?: HostCommandContext | undefined; fromWork?: boolean; capture?: ReturnType<typeof captureResultDelivery>; explicitId?: boolean } = {}) {
+    context, fromWork = false, capture, explicitId = false, delegatedPlanning = false,
+}: { context?: HostCommandContext | undefined; fromWork?: boolean; capture?: ReturnType<typeof captureResultDelivery>; explicitId?: boolean;
+    delegatedPlanning?: boolean } = {}) {
     const locale = host.locale?.(target) ?? 'en', t = translator(locale);
     let captured = capture;
     try {
@@ -104,12 +111,13 @@ export async function reviewChangeResult(host: ResultHost, id: string, target: s
     const deliveryHistory = execute &&
         host.controller.listIntegrations({workId: id, limit: 1}).operations.length
         ? item('/repo deliver ' + id + ' history', t('result.deliveryHistory')) : undefined;
-    const actions = () => [
+    const reply = item('reply', t('result.planningClarificationReply'));
+    const canReply = () => !!controls && !!replyTarget && !host.controller.getNativeHandle(replyTarget);
+    const actions = () => delegatedPlanning && execute ? [...(canReply() ? [reply] : []), openWork] : [
         ...(comparisonAvailable
             ? [item('case-values', t('result.check.caseValuesAction'))] : []),
         ...(execute ? [
-            ...(controls && replyTarget && !host.controller.getNativeHandle(replyTarget)
-                ? [item('reply', t('result.planningClarificationReply'))] : []),
+            ...(canReply() ? [reply] : []),
             ...deliveryActions,
             ...(saveHistory ? [saveHistory] : []),
             ...(deliveryHistory ? [deliveryHistory] : []),
@@ -164,7 +172,8 @@ export async function reviewChangeResult(host: ResultHost, id: string, target: s
         if (action === 'reply') {
             if (!replyTarget || !controls || host.controller.getNativeHandle(replyTarget))
                 throw Error(t('result.planningClarificationReplyChanged'));
-            await controls.activateSource(replyTarget);
+            if (delegatedPlanning && controls.activateDelegatedReply) await controls.activateDelegatedReply(replyTarget, target);
+            else await controls.activateSource(replyTarget);
             captured.assertCurrent();
             if (!host.isCurrent(replyTarget) || host.controller.getNativeHandle(replyTarget))
                 throw Error(t('result.planningClarificationReplyChanged'));
@@ -195,16 +204,97 @@ function parseChangeArgument(argument: string) {
 export function changeCommands(host: ChangeHost): HostCommand[] {
     const delegatedResult = async (target: string, sourceGuard: () => void, locale: UiLocale, context?: HostCommandContext, showEmpty = false): Promise<HostCommandOutcome | 'registry' | undefined> => {
         const read = () => host.controller.inspectRecordedDelegatedResults(target);
+        const readWait = () => observeRecovery(() => host.controller.inspectConversationWait(target));
         const t = translator(locale), execute = host.execute;
+        const recommended = showEmpty ? context?.delegatedRecovery : undefined;
         type Entry = ReturnType<typeof read>['entries'][number];
+        type CoordinatorRoute = NonNullable<ReturnType<typeof read>['descendantCoordinatorRoutes']>[string];
+        const coordinatorRoute = (resultId: string) => observeRecovery(read)?.descendantCoordinatorRoutes?.[resultId];
         const samePublication = (entry: Entry, chosen: Entry) =>
             entry.resultId === chosen.resultId && entry.assignmentId === chosen.assignmentId &&
             entry.conversationId === chosen.conversationId && entry.workId === chosen.workId &&
             entry.publicationHash === chosen.publicationHash && entry.assignmentProof === chosen.assignmentProof;
+        const inspectSetup = (entry: Pick<Entry, 'workId' | 'conversationId'>) => observeRecovery(() => {
+            const work = host.controller.inspectWorkRecovery(entry.workId);
+            if (work.workId !== entry.workId || work.conversationId !== entry.conversationId) return;
+            const resume = inspectWorkResumeEntry(host.controller, work, !!execute);
+            return inspectOriginalPrerequisites({controller:host.controller, ...host.controls, ...host.controls?.model
+                ? {externalModel:host.controls.model} : {}}, work, resume, locale);
+        });
+        const currentWorkGuidance = (entry: Pick<Entry, 'workId' | 'conversationId'>) => observeRecovery(() => {
+            const work = host.controller.inspectWorkRecovery(entry.workId);
+            if (work.workId !== entry.workId || work.conversationId !== entry.conversationId) return;
+            const { allowanceHold, live, origin, originBlocked } = inspectWorkResumeEntry(host.controller, work, !!execute);
+            const originGuidance = workOriginGuidance(work, origin, originBlocked, locale);
+            return [t('delegated.currentWork', { state: work.state }), ...(originGuidance ? [originGuidance] : []),
+                ...workRecoveryGuidance(work, locale, allowanceHold, live, 'delegated-result')];
+        });
+        const visitAccountBlocker = (setup: ReturnType<typeof inspectSetup>) => {
+            const blocker = setup?.accountBlocker;
+            return blocker?.kind === 'conversation' && blocker.conversationId !== target && host.controls?.activateDelegatedReview
+                ? blocker : undefined;
+        };
+        const openOriginal = async (entry: Pick<Entry, 'workId' | 'conversationId'>, command: string, fresh: () => unknown,
+            setup: ReturnType<typeof inspectSetup>, route?: CoordinatorRoute & {resultId: string}) => {
+            if (!execute) return 'cancelled';
+            const accountBlocker = visitAccountBlocker(setup);
+            if (!setup?.needsRuntime && !route && !accountBlocker) return execute(command, target, context);
+            const choices = [{value:'back',label:t('result.back')},{value:command,label:t('notice.inspectOriginal')},
+                ...(route ? [{value:'coordinator',label:t('delegated.openCoordinator')}] : []),
+                ...(accountBlocker ? [{value:'account-blocker',label:t('delegated.openAccountBlocker')}] : []),
+                ...(setup?.needsRuntime ? [{value:'/setup runtime',label:t('delegated.openRuntime')}] : [])];
+            const action = await chooseUiItem(host, t('delegated.ownerActions'), choices);
+            if (!action || action === 'back') return 'cancelled';
+            if (action === command) {
+                fresh();
+                return execute(command, target, context);
+            }
+            if (action === 'coordinator' && route && host.controls?.activateDelegatedReview) {
+                fresh();
+                const latest = coordinatorRoute(route.resultId);
+                if (latest?.proof !== route.proof || latest.conversationId !== route.conversationId)
+                    throw Error(t('delegated.resultChanged'));
+                await host.controls.activateDelegatedReview(route.conversationId, target);
+                return 'completed';
+            }
+            const guard = () => {
+                fresh();
+                if (!isDeepStrictEqual(setup, inspectSetup(entry))) throw Error(t('delegated.resultChanged'));
+            };
+            if (action === 'account-blocker' && accountBlocker && host.controls?.activateDelegatedReview) {
+                guard();
+                await host.controls.activateDelegatedReview(accountBlocker.conversationId, target);
+                return 'completed';
+            }
+            if (action !== '/setup runtime') return 'cancelled';
+            guard();
+            const startup = await ApplicationStartup.open(host.controller).captureInspection();
+            guard();
+            const delegatedSetupGuard = () => {
+                guard();
+                if (!startup.isCurrent()) throw Error(t('delegated.resultChanged'));
+            };
+            await execute('/setup runtime', target, {delegatedSetupGuard});
+            fresh();
+            return 'cancelled';
+        };
+        const reviewPlanningQuestion = async (entry: Entry | Extract<DelegatedStop, {stop: string}>, fresh: () => unknown) => {
+            if (!entry.planningQuestion || !host.controller.hasCurrentDelegatedPlanningQuestion(entry))
+                return undefined;
+            const guard = () => {
+                fresh();
+                if (!host.controller.hasCurrentDelegatedPlanningQuestion(entry)) throw Error(t('delegated.resultChanged'));
+            };
+            guard();
+            const capture = captureResultDelivery(host.controller, entry.workId, {checkStderr:true, locale});
+            if (capture.result.planningClarification?.outputId !== entry.planningQuestion.outputId)
+                throw Error(t('delegated.resultChanged'));
+            return await reviewChangeResult(host, entry.workId, target, guard, {context, capture, delegatedPlanning:true}) ?? 'cancelled';
+        };
         const inspect = async (chosen: Entry): Promise<HostCommandOutcome | undefined> => {
             const fresh = () => {
                 sourceGuard();
-                if (!observeRecovery(read)?.entries.some(entry => samePublication(entry, chosen)))
+                if (!(recommended ? recommended.isCurrent() : observeRecovery(read)?.entries.some(entry => samePublication(entry, chosen))))
                     throw Error(t('delegated.resultChanged'));
                 const publication = host.controller.inspectConversationResult(chosen.resultId);
                 if (publication.workId !== chosen.workId || publication.conversationId !== chosen.conversationId ||
@@ -212,38 +302,105 @@ export function changeCommands(host: ChangeHost): HostCommand[] {
                     throw Error(t('delegated.resultChanged'));
                 return publication;
             };
+            const clarification = recommended ? await reviewPlanningQuestion(chosen, fresh) : undefined;
+            if (clarification) return clarification;
             const position = { scrollTop: 0 };
-            const continuation = chosen.phase === 'BLOCKED' && !chosen.reviewReady && !chosen.uncertain
-                ? t('delegated.continuation', {id: chosen.assignmentId}) : undefined;
             while (true) {
-                const {text: recorded, command} = noticeResultPresentation(fresh(), locale, continuation);
+                const {text: recorded, command} = noticeResultPresentation(fresh(), locale);
+                const setup = !chosen.reviewReady && chosen.phase === 'BLOCKED' && !chosen.uncertain ? inspectSetup(chosen) : undefined;
+                const needsGuidance = !chosen.reviewReady && (chosen.phase === 'BLOCKED' || chosen.uncertain);
+                const current = needsGuidance ? currentWorkGuidance(chosen) : undefined;
+                const guidance = current ? [...current, ...(setup?.directions ?? []), t('delegated.currentNext'),
+                    ...(!chosen.uncertain ? [t('delegated.askCoordinator')] : [])]
+                    : needsGuidance ? [t('workRecovery.guidanceUnavailable'), t('delegated.currentNext')] : [];
                 const text = [
                     ...(chosen.instructionPreview ? [t('delegated.originalRequest', { request: quoteText(chosen.instructionPreview) })] : []),
-                    ...recordedDelegatedEvidence(chosen, locale), recorded,
+                    ...(guidance.length ? [t('delegated.assignmentIdentity', {id: chosen.assignmentId})] : []),
+                    ...guidance,
+                    ...(guidance.length ? [t('delegated.recordedStop')] : []),
+                    ...recordedDelegatedEvidence(chosen, locale, false), recorded,
                 ].join('\n');
                 const title = t('delegated.resultTitle');
                 if (!execute || !command) {
                     await host.show(title, text, undefined, position);
                     return;
                 }
-                if (!await showReviewAction(host, title, text, t('notice.inspectOriginal'), position))
+                if (!await showReviewAction(host, title, text, t(setup?.needsRuntime || visitAccountBlocker(setup) ? 'result.openActions' : 'notice.inspectOriginal'), position))
                     return;
                 fresh();
-                const outcome = await execute(command, target, context);
+                const outcome = await reviewPlanningQuestion(chosen, fresh) ?? await openOriginal(chosen, command, fresh, setup);
                 if (outcome !== 'cancelled' || !host.isCurrent(target))
                     return outcome;
             }
         };
+        const inspectFailure = async (failed: DelegatedStop): Promise<HostCommandOutcome | undefined> => {
+            const assertFailure = () => {
+                sourceGuard();
+                const latest = recommended ? undefined : observeRecovery(read);
+                const stops = 'stop' in failed ? latest?.descendantStops : latest?.requestFailures;
+                if (!(recommended ? recommended.isCurrent() : stops?.some(entry => isDeepStrictEqual(entry, failed))))
+                    throw Error(t('delegated.resultChanged'));
+            };
+            if (recommended && 'stop' in failed) {
+                const clarification = await reviewPlanningQuestion(failed, assertFailure);
+                if (clarification) return clarification;
+            }
+            const {label: title, details: text} = delegatedStopText(failed, locale);
+            const position = { scrollTop: 0 };
+            while (true) {
+                assertFailure();
+                const route = host.controls?.activateDelegatedReview ? coordinatorRoute(failed.resultId) : undefined;
+                const assigningView = route && observeRecovery(() => host.controller.inspectConversation(route.conversationId));
+                const assigningName = assigningView && conversationDisplayIdentity(assigningView);
+                const setup = 'stop' in failed && failed.stop === 'blocked' ? inspectSetup(failed) : undefined;
+                const recorded = 'stop' in failed ? [
+                    t('delegated.assignmentIdentity', {id: failed.assignmentId}), ...(currentWorkGuidance(failed) ?? [t('workRecovery.guidanceUnavailable')]),
+                    ...(setup?.directions ?? []), t('delegated.currentNext'),
+                    ...(text ? [t('delegated.recordedStop'), text] : []),
+                ].join('\n') : text;
+                const detail = [recorded, ...(route ? [t('delegated.originalCoordinator', {id:escapeDisplayControls(assigningName || route.conversationId)})]
+                    : failed.waitAssignmentId ? [t('delegated.coordinatorUnavailable')] : [])].filter(Boolean).join('\n');
+                if (!execute) {
+                    await host.show(title, detail);
+                    return 'completed';
+                }
+                const hasActions = route || setup?.needsRuntime || visitAccountBlocker(setup);
+                if (!await showReviewAction(host, title, detail, t(hasActions ? 'result.openActions' : 'notice.inspectOriginal'), position)) return;
+                assertFailure();
+                const clarification = 'stop' in failed ? await reviewPlanningQuestion(failed, assertFailure) : undefined;
+                const outcome = clarification ?? await openOriginal(failed, '/work ' + failed.workId, assertFailure, setup,
+                    route ? {...route, resultId:failed.resultId} : undefined);
+                if (hasActions && outcome === 'cancelled' && host.isCurrent(target)) continue;
+                if (clarification === 'cancelled' && host.isCurrent(target)) continue;
+                if (!recommended || outcome !== 'cancelled' || !host.isCurrent(target))
+                    return outcome;
+            }
+        };
+        if (recommended) {
+            const {record} = recommended;
+            const outcome = await ('assignmentProof' in record ? inspect(record) : inspectFailure(record));
+            return outcome ?? 'cancelled';
+        }
         let focused: Entry | undefined;
         while (host.isCurrent(target)) {
             sourceGuard();
             const view = observeRecovery(read);
             const entries = view?.entries ?? [];
-            if (!showEmpty && view && !entries.length && !view.unavailable && !view.omitted)
+            const failures = [...(view?.requestFailures ?? []), ...(view?.descendantStops ?? [])];
+            const wait = readWait();
+            const hasCurrentResult = (item: ReturnType<typeof stoppedDelegatedWaitTargets>[number]) =>
+                [...entries, ...failures].some(result => result.assignmentId === item.assignmentId &&
+                    result.conversationId === item.conversationId && result.workId === item.workId && result.resultId === item.resultId);
+            const stops = stoppedDelegatedWaitTargets(wait,view).filter(item => item.cleanupUnconfirmed || !hasCurrentResult(item));
+            const readWork = (id: string) => observeRecovery(() => host.controller.inspectDelegatedWaitWork(target, id));
+            const originals = new Map(stops.map(item => [item.assignmentId, readWork(item.assignmentId)]));
+            const hasChoices = entries.length || failures.length || stops.length;
+            if (!showEmpty && view && !hasChoices && !view.unavailable && !view.omitted && !view.waitReviewUnavailable)
                 return focused ? 'cancelled' : undefined;
             const warning = !view ? t('delegated.listUnavailable') : view.unavailable ? t('delegated.unavailable')
-                : !entries.length && !view.omitted ? t('delegated.empty') : undefined;
-            const title = [t('delegated.resultsTitle'), ...(warning ? [warning] : []),
+                : !hasChoices && !view.omitted && !view.waitReviewUnavailable ? t('delegated.empty') : undefined;
+            const waitUnavailable = view?.waitReviewUnavailable;
+            const title = [t('delegated.resultsTitle'), ...(waitUnavailable ? [t('delegated.waitUnverified')] : []), ...(warning ? [warning] : []),
                 ...(view?.omitted ? [t('delegated.more')] : [])].join('\n');
             const choices = entries.map((entry, index) => {
                 const prefix = entry.assignmentId.slice(0, 8);
@@ -254,10 +411,61 @@ export function changeCommands(host: ChangeHost): HostCommand[] {
                 return {value: entry.resultId, label};
             });
             const initialValue = entries.find(entry => focused && samePublication(entry, focused))?.resultId;
-            const picked = await chooseUiItem(host, title, [{value: 'back', label: t('result.back')}, ...choices, {value: 'registry', label: t('delegated.browseChanges')}], initialValue);
+            const picked = await chooseUiItem(host, title, [{value: 'back', label: t('result.back')},
+                ...(waitUnavailable ? [{value: 'wait-unverified', label: t('delegated.waitUnverifiedAction')}] : []),
+                ...stops.map(item => ({value: 'wait:' + item.assignmentId,
+                    label: delegatedWaitStatus(item, locale) + ' · #' + escapeDisplayControls(item.assignmentId)})),
+                ...failures.map(entry => ({value: 'failure:' + entry.resultId, label: delegatedStopText(entry, locale).label})),
+                ...choices, {value: 'registry', label: t('delegated.browseChanges')}], initialValue);
             sourceGuard();
             if (picked === 'registry') return 'registry';
             if (!picked || picked === 'back') return 'cancelled';
+            if (picked === 'wait-unverified') {
+                if (!observeRecovery(read)?.waitReviewUnavailable) throw Error(t('delegated.resultChanged'));
+                await host.show(t('delegated.waitUnverified'), [
+                    t('delegated.waitUnverifiedRecheck'), t('delegated.waitUnverifiedSupport'), escapeDisplayControls(target),
+                ].join('\n'));
+                continue;
+            }
+            const stopped = stops.find(item => 'wait:' + item.assignmentId === picked);
+            if (stopped) {
+                const assertWait = () => {
+                    sourceGuard();
+                    if (!isDeepStrictEqual(wait, readWait())) throw Error(t('delegated.resultChanged'));
+                };
+                assertWait();
+                const original = originals.get(stopped.assignmentId);
+                const assertOriginal = () => {
+                    if (!isDeepStrictEqual(original, readWork(stopped.assignmentId))) throw Error(t('delegated.resultChanged'));
+                };
+                assertOriginal();
+                const heading = delegatedWaitStatus(stopped, locale);
+                const details = [
+                    t('delegated.assignmentIdentity', {id: escapeDisplayControls(stopped.assignmentId)}),
+                    ...(original?.cancellation ? [t('delegated.ownerCancellation')] : []),
+                    ...(original?.launchFailed ? [t('delegated.launchFailed')] : []),
+                    ...(!hasCurrentResult(stopped) ? [t('delegated.waitWithoutResult')] : []),
+                    ...(original?.cleanupUnconfirmed && !stopped.cleanupUnconfirmed ? [t('workRecovery.settlementUnconfirmed')] : []),
+                    t(original ? 'delegated.currentNext' : 'delegated.waitWorkUnavailable'),
+                    ...(!original ? [t('delegated.supportConversation', {id:escapeDisplayControls(target)})] : []),
+                ].join('\n');
+                if (!original || !execute) {
+                    await host.show(heading, details);
+                    continue;
+                }
+                if (!await showReviewAction(host, heading, details, t('notice.inspectOriginal'))) continue;
+                assertWait();
+                assertOriginal();
+                const outcome = await execute('/work ' + original.workId, target, context);
+                if (outcome !== 'cancelled') return outcome;
+                continue;
+            }
+            const failed = failures.find(entry => 'failure:' + entry.resultId === picked);
+            if (failed) {
+                const outcome = await inspectFailure(failed);
+                if (outcome && outcome !== 'cancelled') return outcome;
+                continue;
+            }
             const chosen = entries.find(entry => entry.resultId === picked)!;
             focused = chosen;
             const outcome = await inspect(chosen);

@@ -142,7 +142,8 @@ export function configurationCommands(host: ConfigurationCommands): HostCommand[
         },
         {
             name: 'setup', descriptionId: 'command.description.setup', argumentHint: '[inspect|runtime [current]|bridge|combined|save [JSON]|clear]', acceptsArgument: argument => startupArgument(argument) !== undefined, run: async (argument, target, context) => {
-                const startupGuard = sourceGuard(target);
+                const assertSource = sourceGuard(target);
+                const startupGuard = () => { assertSource(); context?.delegatedSetupGuard?.(); };
                 startupGuard();
                 const match = startupArgument(argument);
                 if (match === undefined)

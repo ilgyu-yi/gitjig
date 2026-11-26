@@ -40,10 +40,12 @@ test('a recorded usage limit keeps the exact inspection and displays only a boun
         blocked:['Original provider error']};
     const result = {kind:'governed-work-observation/v1', workId:'original-work', phase:'BLOCKED', reviewReady:false, recordedResult:compact};
     assert.equal(presentation(result).command, '/work original-work');
-    assert.match(summary(view(result)), /Provider usage limit reported[\s\S]*Provider-reported reset: .*GMT[\s\S]*Wait and check your account/);
+    assert.match(summary(view(result)), /Provider usage limit reported[\s\S]*Provider-reported reset: .*GMT[\s\S]*Check the original account's current limits/);
     assert.match(view(result), /Recorded details[\s\S]*Original provider error/);
     assert.match(view(result, 'ko'), /제공자가 알린 한도 초기화 시각/);
     assert.match(view({...result, recordedResult:{...compact, providerUsageLimitReset:null}}), /did not supply a usable reset time/);
+    assert.match(summary(view({...result, recordedResult:{...compact, providerUsageLimitRole:'adjudicator'}})), /Recorded affected role/);
+    assert.doesNotMatch(summary(view({...result, recordedResult:{...compact, providerUsageLimitRole:'foreign-role'}})), /Recorded affected role/);
     for (const variant of [
         {...result, state:'UNKNOWN'}, {...result, reviewReady:true}, {...result, phase:'REVIEW_READY'},
         {...result, recordedResult:{...compact, state:'UNKNOWN'}},
