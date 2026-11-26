@@ -22,6 +22,27 @@ test('model diagnostics stay read-only, application-scoped and separate from mod
 test('future default picker exposes the same diagnostics and changes no current choice on cancel',async t=>{
  const f=await world(t),before=choice(f),h=host(f,['Inspect model routes and application scope','Cancel']);assert.equal(await h.run('/model-default'),'cancelled');assert.equal(h.shown.length,1);assert.deepEqual(choice(f),before);assert.equal((await f.models.list()).default.model,null);await h.ui.close();
 });
+test('model pickers rank a locally connected route above a disconnected saved default', async t => {
+ const f = await world(t);
+ await f.accounts.setDefault('picker-fixture','alpha');
+ await f.accounts.configure({providers:{
+  'picker-fixture':{api:'openai-completions',baseUrl:'http://127.0.0.1:9/v1',models:[{id:'alpha'}]},
+  'connected-fixture':{api:'openai-completions',baseUrl:'http://127.0.0.1:9/v1',apiKey:'fixture-only',models:[{id:'ready'}]},
+ }});
+ const seen = [];
+ const h = host(f, [], { chooseItems: async (title, items) => {
+  seen.push(title);
+  assert.equal(items[0].value,'model:connected-fixture/ready');
+  assert.match(items[0].label,/credentials in app model configuration/);
+  assert.match(items.find(item=>item.value==='model:picker-fixture/alpha').label,/no app credentials/);
+ } });
+ assert.equal(await h.run('/model'),'cancelled');
+ assert.equal(await h.run('/model-default'),'cancelled');
+ assert.equal(seen.length,2);
+ assert.equal((await f.models.list()).default.model,'alpha');
+ assert.equal(choice(f).kind,'unbound');
+ await h.ui.close();
+});
 test('navigation during picker or catalogue wait refuses without touching either conversation choice',async t=>{
  const f=await world(t),before=choice(f);let current=true;const h=host(f,[()=>{current=false;return 'picker-fixture/alpha';}],{isCurrent:()=>current});await assert.rejects(h.run(),/source changed/);assert.deepEqual(choice(f),before);await h.ui.close();
  current=true;const list=f.accounts.models.bind(f.accounts);let enter,release;const began=new Promise(r=>enter=r),gate=new Promise(r=>release=r);f.accounts.models=async(...args)=>{const result=await list(...args);enter();await gate;return result;};const delayed=host(f,[],{isCurrent:()=>current}),pending=delayed.run();await began;current=false;release();await assert.rejects(pending,/source changed/);assert.equal(delayed.shown.length,0);assert.deepEqual(choice(f),before);await delayed.ui.close();
@@ -76,11 +97,12 @@ test('route details keep current catalogue, saved bridge changes and external ac
  assert.match(pending,/Saved bridge changes take effect when you reopen/);
  assert.match(pending,/picker-fixture · OAuth sign-in stored/);
  assert.doesNotMatch(pending,/Use \/login/);
- const unavailable = view('unavailable','current',model,[]);
+ const unavailable = view('unavailable','current',model,[{...oauth[0],stored:null}]);
  assert.match(unavailable,/catalogue unavailable/);
  assert.match(unavailable,/Use \/setup inspect/);
  assert.match(unavailable,/Use \/login to connect this provider/);
  assert.doesNotMatch(unavailable,/relaunch/);
+ assert.match(view('unavailable','current',model,[]),/app credential status unavailable/);
  const unlisted = view('listed','current',{...model, modelId:'absent'},[]);
  assert.match(unlisted,/selected model is absent from this catalogue/);
  assert.doesNotMatch(unlisted,/Use \/login/);

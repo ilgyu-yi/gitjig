@@ -503,8 +503,18 @@ test('next steps match first-run project/account/model state and reuse saved sel
     choose:async(_title,rows)=>rows[0],execute:async()=>assert.fail('Returning to the editor must not dispatch')}));
  assert.equal(await openChat.execute('/ready',chat),'completed');
  assert.equal(f.c.inspectConversationInputs(chat).length,0);
- assert.match(await next(),/Choose a model/);await f.accounts.setDefault('onboard-fixture','first');assert.match(await next(),/Use saved default model onboard-fixture\/first/);
- let command;await new HostCommands(readinessCommands({controller:f.c,models:f.models,accounts:f.accounts,isCurrent:()=>true,choose:async(_title,rows)=>command?rows.at(-1):rows[0],execute:async value=>{command=value;return'cancelled';}})).execute('/ready',cid);assert.equal(command,'/model onboard-fixture/first');
+ assert.match(await next(),/Choose a model/);await f.accounts.setDefault('onboard-fixture','first');assert.match(await next(),/Review saved default model onboard-fixture\/first/);
+ let command, reviews=0;
+ await new HostCommands(readinessCommands({controller:f.c,models:f.models,accounts:f.accounts,isCurrent:()=>true,choose:async(title,rows)=>{
+    if(title.startsWith('Review saved default')) {
+        assert.equal(f.c.getConversationModelChoice(cid).kind,'unbound');
+        assert.equal(rows[0],'Back to setup overview');
+        return rows[Math.min(reviews++,1)];
+    }
+    return command?rows.at(-1):rows[0];
+ },execute:async value=>{command=value;return'cancelled';}})).execute('/ready',cid);
+ assert.equal(reviews,2);
+ assert.equal(command,'/model onboard-fixture/first');
  let choice=f.c.getConversationModelChoice(cid);await f.models.select({conversationId:cid,expectedGeneration:1,expectedRevision:choice.revision,provider:'onboard-fixture',modelId:'first'});assert.match(await next(),/Prepare the project execution environment/);
  await ApplicationStartup.open(f.c).save({version:1,runtime:{dockerBinary:'/usr/bin/false',dockerContext:'owned',image:'sha256:'+'0'.repeat(64)}});assert.match(await next(),/Review and apply the saved execution environment/);
  const builtin=(await f.models.list()).models.find(model=>model.provider==='openai');assert.ok(builtin);
@@ -520,6 +530,60 @@ test('a removed selected model recommends explicit reselection instead of task s
  const view=await f.models.newConversation({projectId:'P',choice:await f.models.choice('removed-fixture','first')});await f.accounts.configure(config(['second']));let called;
  await new HostCommands(readinessCommands({controller:f.c,models:f.models,accounts:f.accounts,isCurrent:()=>true,choose:async(_title,rows)=>{assert.match(rows[0],/Replace unavailable current model removed-fixture\/first/);return called?rows.at(-1):rows[0];},execute:async command=>{called=command;return'cancelled';}})).execute('/ready',view.conversationId);
  assert.equal(called,'/model');assert.equal(f.c.getConversationModelChoice(view.conversationId).modelId,'first');assert.equal(f.c.store.one('SELECT COUNT(*) AS n FROM works').n,0);
+});
+
+test('saved default recommendation rechecks account evidence before applying the exact model', async t => {
+    const {c,a,accounts,models}=await world(t), cid=a.conversationId;
+    const {id}= (await models.list()).models.find(model=>model.provider==='openai');
+    await accounts.setDefault('openai',id);
+    c.setDraft({conversationId:cid,expectedRevision:0,text:'Do not send this draft'});
+    const absent=await accounts.status();
+    const connected=absent.map(account=>account.provider==='openai'?{...account,stored:'api_key'}:account);
+    let observation=absent;
+    const pages=[];
+    const outcomes=['return-request','next','select','return-request'];
+    const ready=new HostCommands(readinessCommands({
+        controller:c,models,accounts:{status:async()=>observation},isCurrent:()=>true,
+        choose:async()=>assert.fail('Stable picker required'),
+        chooseItems:async(title,items)=>{
+            pages.push({title,first:items[0].label});
+            if(title.startsWith('Review saved default')) observation=absent;
+            return outcomes.shift();
+        },
+        execute:async()=>assert.fail('Stale account evidence applied a model or opened login'),
+    }));
+    assert.equal(await ready.execute('/ready',cid),'cancelled');
+    observation=connected;
+    assert.equal(await ready.execute('/ready',cid),'cancelled');
+    assert.match(pages[0].first,/Connect the account for openai/);
+    assert.match(pages[1].first,/Review saved default model openai/);
+    assert.match(pages[3].title,/Readiness updated/);
+    assert.match(pages[3].first,/Connect the account for openai/);
+    assert.equal(c.getConversationModelChoice(cid).kind,'unbound');
+    assert.equal(c.inspectConversation(cid).draft.text,'Do not send this draft');
+    assert.equal(c.store.one('SELECT COUNT(*) n FROM runs').n,0);
+});
+
+test('an unreadable active bridge catalogue keeps the selected model and opens setup inspection', async t => {
+    const {c,a,models,accounts}=await world(t), cid=a.conversationId;
+    const bridge={models:async()=>{throw Error('Owned catalogue fixture failed');}};
+    c.applicationModelResource=()=>bridge;
+    const revision=c.getConversationModelChoice(cid).revision;
+    c.store.tx(()=>writeConversationModelChoice(c.store,cid,{kind:'managed',provider:'claude-bridge',modelId:'retained',thinkingLevel:'off'},revision));
+    const original=c.getConversationModelChoice(cid);
+    const calls=[];
+    const ready=new HostCommands(readinessCommands({
+        controller:c,models,accounts,isCurrent:()=>true,
+        choose:async(title,rows)=>{
+            assert.match(title,/catalogue unavailable/);
+            assert.match(rows[0],/Inspect the current bridge setup/);
+            return calls.length?undefined:rows[0];
+        },
+        execute:async command=>{calls.push(command);return 'cancelled';},
+    }));
+    assert.equal(await ready.execute('/ready',cid),'cancelled');
+    assert.deepEqual(calls,['/setup inspect']);
+    assert.deepEqual(c.getConversationModelChoice(cid),original);
 });
 
 test('restart guidance uses the actual source/npm entry or bound bundle launcher with quoted home and conversation',()=>{
@@ -704,11 +768,13 @@ test('unbound readiness discards a stale request choice after '+drift+' drift', 
     assert.equal(f.c.store.one('SELECT COUNT(*) AS n FROM runs').n,0);
 });
 
-for(const action of ['Restore Claude Code bridge','Choose another current model'])test('ordinary missing bridge offers explicit alternative '+action,async t=>{
+for(const action of ['next','model'])test('ordinary missing bridge keeps model selection in secondary settings · '+action,async t=>{
  const f=await world(t),project=path.join(f.root,'project');await fs.mkdir(project);await f.c.registerProject({id:'P',sourceRoot:project});f.c.setConversationProject({conversationId:f.a.conversationId,projectId:'P',expectedGeneration:0});const prior=f.c.getConversationModelChoice(f.a.conversationId);
  f.c.store.tx(()=>writeConversationModelChoice(f.c.store,f.a.conversationId,{kind:'managed',provider:'claude-bridge',modelId:'retained',thinkingLevel:'off'},prior.revision));let sent;
- await new HostCommands(readinessCommands({controller:f.c,models:f.models,accounts:f.accounts,isCurrent:()=>true,choose:async(title,rows)=>sent?rows.at(-1):title==='Choose a recovery action'?action:rows[0],execute:async(command)=>{sent=command;return'cancelled';}})).execute('/ready',f.a.conversationId);
- assert.equal(sent,action==='Restore Claude Code bridge'?'/bridge':'/model');assert.equal(f.c.store.one('SELECT COUNT(*) n FROM works').n,0);assert.equal(f.c.getConversationModelChoice(f.a.conversationId).provider,'claude-bridge');
+ await new HostCommands(readinessCommands({controller:f.c,models:f.models,accounts:f.accounts,isCurrent:()=>true,choose:async()=>assert.fail('Stable picker required'),
+    chooseItems:async(title,items)=>sent?'return-request':action==='model'&&!items.some(item=>item.value==='model')?'more-settings':action,
+    execute:async(command)=>{sent=command;return'cancelled';}})).execute('/ready',f.a.conversationId);
+ assert.equal(sent,action==='next'?'/bridge':'/model');assert.equal(f.c.store.one('SELECT COUNT(*) n FROM works').n,0);assert.equal(f.c.getConversationModelChoice(f.a.conversationId).provider,'claude-bridge');
 });
 
 test('Korean bridge recovery uses the selected action identity and keeps the original model',async t=>{
@@ -722,12 +788,8 @@ test('Korean bridge recovery uses the selected action identity and keeps the ori
         controller:c,models,accounts,hostLanguage:'ko-KR',isCurrent:()=>true,
         choose:async()=>assert.fail('Production readiness uses stable choices'),
         chooseItems:async(title,items)=>{
-            if(title==='복구 동작 선택') {
-                assert.deepEqual(items.map(item=>item.value),['back','/bridge','/model']);
-                assert.equal(items[1].label,'Claude Code 브리지 복구');
-                return '/bridge';
-            }
-            assert.match(items[0].label,/Claude Code 브리지를 복구/);
+            assert.match(title,/Claude Code 브리지가 활성 상태가 아닙니다/);
+            assert.match(items[0].label,/Claude Code 브리지 복구/);
             return calls.length?'return-request':'next';
         },
         execute:async(command,target)=>{calls.push([command,target]);return 'cancelled';},
@@ -865,7 +927,7 @@ test('reply language change during a localized choice refuses stale command disp
  assert.equal(c.store.one('SELECT COUNT(*) AS n FROM works').n,0);
 });
 
-for (const entry of ['next', 'accounts']) for (const source of ['native', 'direct']) test(entry + ' exposes stable ' + source + ' route without rebinding or work', async t => {
+for (const source of ['native', 'direct']) test('Secondary account settings expose the stable ' + source + ' route without rebinding or work', async t => {
     const f = await world(t), project = path.join(f.root, 'account-choice-project');
     await fs.mkdir(project);
     await f.c.registerProject({id: 'P', sourceRoot: project});
@@ -881,8 +943,7 @@ for (const entry of ['next', 'accounts']) for (const source of ['native', 'direc
                 choseSource = true;
                 return source;
             }
-            assert.ok(items.some(item => item.value === entry));
-            return entry;
+            return items.some(item => item.value === 'accounts') ? 'accounts' : 'more-settings';
         },
         execute: async command => { dispatched = command; current = false; return 'cancelled'; },
     }));
@@ -914,7 +975,7 @@ test('Accounts exposes both sources with stored direct accounts and an unbound m
     assert.deepEqual(pages[3], pages[1]);
 });
 
-test('a request arriving in the recommended account chooser refreshes readiness before login', async t => {
+test('a request arriving while the account recommendation is open refreshes readiness before login', async t => {
     const {c, a, models, accounts} = await world(t), cid = a.conversationId;
     const draft = 'Keep the text I was editing';
     c.setDraft({conversationId:cid,expectedRevision:0,text:draft});
@@ -923,10 +984,10 @@ test('a request arriving in the recommended account chooser refreshes readiness 
         controller:c, models, accounts, hostLanguage:'en', isCurrent:() => true,
         choose:async () => assert.fail('Stable picker required'),
         chooseItems:async (_title, items) => {
-            if (items.some(item => item.value === 'direct')) {
+            if (!queued) {
                 await c.queueConversationInput({conversationId:cid,expectedGeneration:a.generation,text:'A request arrived',mode:'idle'});
                 queued = true;
-                return 'direct';
+                return 'next';
             }
             if (queued) {
                 assert.match(items[0].label, /Review pending requests/);
@@ -942,7 +1003,7 @@ test('a request arriving in the recommended account chooser refreshes readiness 
     assert.equal(c.store.one('SELECT COUNT(*) n FROM runs').n, 0);
 });
 
-test('an original work linked in the recommended account chooser refreshes readiness before login', async t => {
+test('an original work linked while the account recommendation is open refreshes readiness before login', async t => {
     const f = await world(t), cid = f.a.conversationId, project = path.join(f.root, 'linked-original');
     await fs.mkdir(project);
     await fs.writeFile(path.join(project, 'file.txt'), 'Owned source');
@@ -956,13 +1017,9 @@ test('an original work linked in the recommended account chooser refreshes readi
         chooseItems: async (_title, items) => {
             if (++choices === 1) {
                 assert.match(items[0].label, /Connect your model account/);
-                return 'next';
-            }
-            if (choices === 2) {
-                assert.ok(items.some(item => item.value === 'direct'));
                 f.c.store.run("UPDATE works SET data=json_set(data,'$.conversation',?,'$.ownerRootActivation.state','PENDING') WHERE id=?", cid, workId);
                 assert.equal(f.c.conversationChange(cid).workId, workId);
-                return 'direct';
+                return 'next';
             }
             assert.match(items[0].label, /Inspect the original work/);
             return undefined;
@@ -970,7 +1027,7 @@ test('an original work linked in the recommended account chooser refreshes readi
         execute: async () => assert.fail('Old account choice dispatched after original work appeared'),
     })).execute('/ready', cid);
     assert.equal(outcome, 'cancelled');
-    assert.equal(choices, 3);
+    assert.equal(choices, 2);
 });
 
 test('Accounts offers guided bridge recovery for the selected model with usable saved settings', async t => {
@@ -979,7 +1036,7 @@ test('Accounts offers guided bridge recovery for the selected model with usable 
     await ApplicationStartup.open(f.c).save({version:1, bridge});
     f.c.store.tx(() => writeConversationModelChoice(f.c.store, cid, {kind:'managed', provider:'claude-bridge', modelId:'retained', thinkingLevel:'off'}, f.c.getConversationModelChoice(cid).revision));
     async function selectAccount(expected) {
-        const choices = ['accounts', 'return-request'], calls = [];
+        const choices = ['more-settings', 'accounts', 'return-request'], calls = [];
         assert.equal(await new HostCommands(readinessCommands({
             controller: f.c, models: f.models, accounts: f.accounts, isCurrent: () => true,
             choose: async () => assert.fail('Stable picker required'),

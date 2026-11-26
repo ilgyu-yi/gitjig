@@ -14,6 +14,8 @@ For retained project work, the first-screen guidance and `/ready` inspect the or
 
 In `/model` and `/model-default`, choose **Inspect model routes and application scope** to see the current conversation model, the applicable account route, the saved application default and cycling patterns. Bridge metadata shows whether its catalogue loaded in the current session and whether a saved bridge change takes effect after relaunch. The screen reports configuration facts, not account entitlement or a successful request. Approved project overrides can differ; use `/settings` to inspect their effective sources. You can select catalogue models before login. `/model` changes the current conversation, `/model-default` changes future defaults, and `/thinking` changes only the current conversation. Navigation or close during an unfinished selection refuses a stale write and preserves the original choice and draft.
 
+Both pickers put routes with local credential records or explicit account configuration first. A loaded Claude Code catalogue is shown with model access unchecked. A saved default ranks first among other models with the same account status and keeps its saved value if another route is listed above it. With no connected route, the picker starts on account and model guidance. These local facts do not verify a credential or entitle the account to a particular model.
+
 Managed sessions disable Pi installation telemetry. The CLI ignores `PI_TELEMETRY` at startup; ordinary provider request headers remain managed by Pi.
 
 ## Supported scope

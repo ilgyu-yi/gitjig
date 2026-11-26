@@ -105,7 +105,7 @@ export function modelCommands(h: Host) {
                 if (!reference) {
                     const catalogue = await h.accounts.models(), accounts = await h.accounts.status();
                     guard();
-                    reference = await pickApplicationModel({ ...h, locale }, catalogue, { guard, title: translator(locale)('model.title'), choice, accounts, preferConfigured: true }) ?? '';
+                    reference = await pickApplicationModel({ ...h, locale }, catalogue, { guard, title: translator(locale)('model.title'), choice, accounts }) ?? '';
                 }
                 guard();
                 if (!reference)
