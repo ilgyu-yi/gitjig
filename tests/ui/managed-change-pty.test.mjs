@@ -374,7 +374,7 @@ test('source terminal applies a missing runtime and returns to the exact managed
  f.pass();
 });
 
-test('source terminal repairs runtime in the original managed resume and Back preserves its ledger',{timeout:14000},async t=>{
+test('source terminal repairs runtime, preserves its ledger on Back and explicitly resumes the original work',{timeout:16000},async t=>{
  const f=await managedWorld(t),request='Original managed request 한국어',choice=f.c.getConversationModelChoice(f.cid);
  const baseline={...await f.models.baseline('P',choice),source:{kind:'conversation',conversationId:f.cid,choiceRevision:choice.revision}};
  const view=await f.c.startConversationChange({conversationId:f.cid,expectedGeneration:0,expectedModelRevision:choice.revision,projectId:'P',request,applicationModelBaseline:baseline});
@@ -401,6 +401,16 @@ test('source terminal repairs runtime in the original managed resume and Back pr
  assert.ok(actual.output.includes(request));
  assert.match(actual.output,/Open resume confirmation/);
  assert.match(actual.output,/Active Docker context: "RESUME_HANDOFF"/);
+ const resumeFile=path.join(f.root,'resume-after-runtime-repair.json');
+ const resumed=await terminal(f,'resume-after-runtime-repair',[
+  {wait:'Model: original',queries:frozen,send:'\x15'+command+'\x1b\r'},
+  {wait:'Open resume confirmation',queries:frozen,send:'\r'},
+  {wait:uiText('en','change.resumeAccept'),queries:frozen,send:uiText('en','change.resumeAccept')+'\r'},
+  {wait:'',waitFiles:[{path:resumeFile+'.receipt',value:JSON.stringify({calls:1,active:true,settled:false,accountsClosed:false})}],
+   queries:[{sql:'SELECT id FROM works ORDER BY rowid',rows:[[view.workId]]}],releaseFile:resumeFile+'.release',send:''},
+  {wait:'CONTROLLED_SOURCE_FAILURE',send:'\x07q'},
+ ],true);
+ assert.deepEqual(resumed.receipt,{calls:1,active:false,settled:true,accountsClosed:true});
  f.pass();
 });
 

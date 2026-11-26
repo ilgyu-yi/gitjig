@@ -1,5 +1,6 @@
 import { configuredProviderRequestLimit } from '../workflow/execution-bounds.js';
-import { inspectCoordinationNoticePresentation, inspectRecordedDelegatedResults } from './conversation-results.js';
+import { captureInterruptedOrdinaryDialog, inspectCoordinationNoticePresentation, inspectDelegatedWaitDialogs, inspectDelegatedWaitWork, inspectRecordedDelegatedResults } from './conversation-results.js';
+import { currentAssignmentResultId } from './assignment-result-attempt.js';
 import { isDeepStrictEqual } from 'node:util';
 import type { ConversationView } from './interaction-types.js';
 import { modelContextFailureCode, type ModelContextFailureCode } from '../pi/context-budget-error.js';
@@ -40,6 +41,7 @@ import { captureApplicationModelOperation, subjectRoleModel } from './applicatio
 import { captureSessionPreferences } from '../pi/session-preferences.js';
 import { inspectContextStatus } from './context-status.js';
 import { CompletedResources, resourcePolicy, conversationLifecycle, governedConversationHolds, lifecycleEffectHolds, lifecycleReasons, assertConversationExecutable, assertWorkConversation } from './completed-resources.js';
+import { inspectTerminalRoleInput } from './terminal-role-input.js';
 import { conversationModelChoice, matchesExternalModel, writeConversationModelChoice, validateModelChoice, type ModelChoiceInput } from './model-choice.js';
 import { inspectConversationStartupFailure, inspectConversationResult, inspectConversationResultDetail, inspectConversationRequestFailure, inspectConversationResponseFailure, inspectRetainedConversationCompletion, inspectRetainedConversationInterruption } from './conversation-results.js';
 import { Contributions } from './contributions.js';
@@ -83,6 +85,12 @@ interface ManagedConversationOperation {
     abort: AbortController;
     done: Promise<ChangeView>;
 }
+type ApplicationMutationBlocker =
+    | {kind: 'managed-operation' | 'lifecycle-operation' | 'governed-operation'}
+    | (Pick<ConversationView, 'conversationId' | 'generation' | 'directionRevision' | 'projectId' | 'workId'> & {
+        kind: 'conversation';
+        next: 'wait' | 'dialog' | 'readiness' | 'inputs' | 'reclaim' | 'role-reclaim';
+    });
 const parse = (value: string) => JSON.parse(value);
 const id = (value: string) => {
     if (!/^[A-Za-z0-9_-]{1,100}$/.test(value))
@@ -620,21 +628,53 @@ export class Controller {
         if (desired && (model.provider !== desired.provider || model.modelId !== desired.modelId || thinking !== desired.thinkingLevel))
             throw Error('APPLICATION_MODEL_UNAVAILABLE: admitted source differs from the desired model or thinking');
     }
-    assertApplicationMutationAllowed(): void {
+    inspectApplicationMutationBlocker(): ApplicationMutationBlocker | undefined {
         this.assertOpen();
         // Legacy runs do not retain a provider-source dependency. Until every
         // such run is attributable, refuse all account/config mutation while
         // any producer or retained queued/waiting obligation could use it.
         if (this.managedOperations.size)
-            throw Error('Settle managed conversation operations before account/model configuration changes');
+            return {kind: 'managed-operation'};
         if (this.lifecycleBusy.size)
-            throw new Error('Settle conversation lifecycle/model changes before account configuration changes');
-        const blocker = this.interactions.list().find(view => !view.deleted && !view.archived &&
-            (view.state !== 'IDLE' || this.interactions.getHandle(view.conversationId) || this.ordinaryCore?.isBusy(view.conversationId) ||
-                (this.completedCore?.inspect(view.conversationId).state ?? 'absent') !== 'absent' || lifecycleReasons(this.store, view.conversationId).length));
-        if (this.active.size || blocker)
-            throw new Error('Settle active, queued or retained conversation obligations before account/model configuration changes; ' +
-                (blocker ? `conversation ${blocker.conversationId}. For a retained idle client use conversation reclaim --conversation ${blocker.conversationId} --generation ${blocker.generation}, then retry` : 'a governed operation is active; wait for settlement'));
+            return {kind: 'lifecycle-operation'};
+        for (const view of this.interactions.list()) {
+            if (view.deleted || view.archived) continue;
+            const {conversationId, generation, directionRevision, projectId, workId, state} = view;
+            const owner = {kind: 'conversation' as const, conversationId, generation, directionRevision, projectId, workId};
+            const busy = this.interactions.getHandle(conversationId) || this.ordinaryCore?.isBusy(conversationId);
+            const retained = this.completedCore?.inspect(conversationId).state ?? 'absent';
+            if (view.inputNeeded)
+                return {...owner, next: this.interactions.hasLiveInputTarget(conversationId) ? 'dialog' : 'readiness'};
+            if (retained === 'closing' || state === 'RUNNING')
+                return {...owner, next: 'wait'};
+            const reasons = lifecycleReasons(this.store, conversationId);
+            if (state === 'IDLE' && !busy && retained === 'absent' && !reasons.length)
+                continue;
+            if (state === 'IDLE' && !busy && retained === 'retained' && !reasons.length)
+                return {...owner, next: 'reclaim'};
+            if (!busy && view.role && reasons.length === 1) {
+                const roleInput = inspectTerminalRoleInput(this.store, conversationId, generation);
+                if (roleInput && reasons[0] === `input:${roleInput.receipt.inputId}:INITIAL_RESERVED`)
+                    return {...owner, next: 'role-reclaim'};
+            }
+            const reviewInputs = reasons.includes('native input reconciliation required') ||
+                !view.role && reasons.some(reason => reason.startsWith('input:'));
+            return {...owner, next: reviewInputs ? 'inputs' : 'readiness'};
+        }
+        if (this.active.size)
+            return {kind: 'governed-operation'};
+    }
+    assertApplicationMutationAllowed(): void {
+        const blocker = this.inspectApplicationMutationBlocker();
+        if (!blocker) return;
+        if (blocker.kind === 'managed-operation')
+            throw Error('Settle managed conversation operations before account/model configuration changes');
+        if (blocker.kind === 'lifecycle-operation')
+            throw Error('Settle conversation lifecycle/model changes before account configuration changes');
+        const next = blocker.kind === 'conversation' ? `conversation ${blocker.conversationId}. ` +
+            (blocker.next === 'reclaim' || blocker.next === 'role-reclaim' ? `Use conversation reclaim --conversation ${blocker.conversationId} --generation ${blocker.generation}, then retry`
+                : 'Open its readiness or retained requests to review the hold') : 'a governed operation is active; wait for settlement';
+        throw Error('Settle active, queued or retained conversation obligations before account/model configuration changes; ' + next);
     }
     private work(workId: string) {
         const work = this.store.one('SELECT * FROM works WHERE id=?', workId);
@@ -743,6 +783,15 @@ export class Controller {
     inspectConversationWait(id: string) {
         this.assertOpen();
         return inspectConversationWait(this.store, id);
+    }
+    inspectDelegatedWaitWork(conversationId: string, assignmentId: string) {
+        this.assertOpen();
+        return inspectDelegatedWaitWork(this.store, conversationId, assignmentId);
+    }
+    inspectDelegatedWaitDialogs(conversationId: string, candidateIds: ReadonlySet<string>) {
+        this.assertOpen();
+        return inspectDelegatedWaitDialogs(this.store, conversationId, id => candidateIds.has(id) && this.hasLiveInputTarget(id)
+            ? this.getNativeHandle(id)?.identity : undefined);
     }
     inspectConversationInputs(id: string) {
         this.assertOpen();
@@ -1180,6 +1229,19 @@ export class Controller {
         this.recordedResultCache.set(conversationId, {revision, view});
         return structuredClone(view);
     }
+    /** Reconcile the selected, receiver-verified publication with the current owner hold. */
+    hasCurrentDelegatedPlanningQuestion(entry: {assignmentId: string; workId: string; conversationId: string; resultId: string;
+        planningQuestion?: {outputId: string; questionCount: number} | undefined}): boolean {
+        if (!entry.planningQuestion) return false;
+        try {
+            const assignment = this.store.one(`SELECT data FROM conversation_assignments WHERE id=? AND work=? AND target=?
+                AND state='UNAVAILABLE' AND length(CAST(data AS BLOB))<=65536`, entry.assignmentId, entry.workId, entry.conversationId);
+            if (!assignment || currentAssignmentResultId(parse(assignment.data)) !== entry.resultId) return false;
+            const hold = this.changes.inspectAssignmentOwnerAction(entry.workId, false);
+            return !!hold && 'kind' in hold && hold.kind === 'planning-clarification' && hold.outputId === entry.planningQuestion.outputId &&
+                hold.questionCount === entry.planningQuestion.questionCount;
+        } catch { return false; }
+    }
     inspectNotifications(conversationId: string, { unreadOnly = false, notificationId }: { unreadOnly?: boolean; notificationId?: string } = {}) {
         this.interactions.inspect(conversationId);
         return this.store.all(`SELECT id,state,CASE WHEN length(CAST(data AS BLOB))<=262144 AND json_valid(data) THEN data END AS data
@@ -1346,6 +1408,8 @@ export class Controller {
             const data = parse(this.store.one('SELECT data FROM conversation_state WHERE conversation=?', conversationId).data);
             delete data.waitHandles;
             delete data.sourceIdentity;
+            delete data.continuationError;
+            delete data.continuationFailure;
             this.store.run('UPDATE conversation_state SET resource=?,data=? WHERE conversation=?', 'IDLE', JSON.stringify({ ...data, continuationAuthorized: false,
                 explicitContinuation: { runId: before.identity.runId, sourceIdentity: before.identity, waitHandles: before.data.waitHandles,
                     inputId: receipt.inputId, sourceId: receipt.sourceId, directionRevision: receipt.directionRevision,
@@ -1452,6 +1516,8 @@ export class Controller {
                         const data = parse(this.store.one('SELECT data FROM conversation_state WHERE conversation=?', cid).data);
                         delete data.waitHandles;
                         delete data.sourceIdentity;
+                        delete data.continuationError;
+                        delete data.continuationFailure;
                         this.store.run('UPDATE conversation_state SET data=? WHERE conversation=?', JSON.stringify({ ...data, continuationAuthorized: false,
                             supersededContinuation: { runId: wait.runId, sourceIdentity: wait.identity, waitHandles: wait.handles, inputId, sourceId: selected.source, directionRevision: before.direction, newRunId } }), cid);
                     };
@@ -3589,7 +3655,7 @@ export class Controller {
     }) {
         if (!options.reason.trim() || Buffer.byteLength(options.reason) > 128 * 1024)
             throw new Error('Cancellation requires a retained bounded reason');
-        const works = new Set<string>(), assignments = new Set<string>();
+        const works = new Set<string>(), assignments = new Set<string>(), changedCoordinators = new Set<string>();
         this.store.tx(() => {
             if (options.workId) {
                 works.add(options.workId);
@@ -3627,7 +3693,7 @@ export class Controller {
             const source = randomUUID();
             const requested = options.explicitOwnerWork && options.workId ? this.work(options.workId) : null;
             for (const assignmentId of assignments) {
-                const row = this.store.one('SELECT state,target,data FROM conversation_assignments WHERE id=?', assignmentId), data = parse(row.data);
+                const row = this.store.one('SELECT state,target,source_conversation,data FROM conversation_assignments WHERE id=?', assignmentId), data = parse(row.data);
                 if (!data || typeof data !== 'object' || Array.isArray(data))
                     throw Error('Original assignment cancellation correspondence is unavailable');
                 this.store.run('UPDATE conversation_assignments SET state=?,data=? WHERE id=?', 'CANCELLED', JSON.stringify({ ...data, ...(row.state === 'COMPLETE' ? { cancellationPreviousState: 'COMPLETE' } : {}), cancellationSource: source }), assignmentId);
@@ -3635,6 +3701,7 @@ export class Controller {
                 this.store.run(`UPDATE conversation_inputs SET state='CANCELLED' WHERE conversation=?
                     AND CASE WHEN json_valid(data) THEN json_extract(data,'$.assignment')=? ELSE 0 END
                     AND state NOT IN ('CONSUMED','CONFLICTED')`, row.target, assignmentId);
+                changedCoordinators.add(row.source_conversation);
             }
             for (const alias of aliases)
                 this.store.run('UPDATE conversation_state SET resource=? WHERE conversation=? AND work=?', alias.resource, alias.conversationId, alias.workId);
@@ -3651,6 +3718,7 @@ export class Controller {
             };
             this.store.run('INSERT INTO sources VALUES(?,?,?,?)', source, null, JSON.stringify(origin), options.reason);
         });
+        for (const coordinator of changedCoordinators) this.interactions.assignmentChanged(coordinator);
         for (const operation of this.managedOperations.values())
             if (operation.workId && works.has(operation.workId))
                 operation.abort.abort();
@@ -3908,9 +3976,11 @@ export class Controller {
             if (!held && !['governed-role', 'governed-check'].includes(data.kind))
                 await fs.rm(run.staging, { recursive: true, force: true });
             this.store.tx(() => {
+                const interruptedOwnerDialog = captureInterruptedOrdinaryDialog(this.store, run, data);
                 this.settleBudget(run.id);
                 this.patchRun(run.id, held ? 'UNKNOWN' : rejectedCreate ? 'SETTLED' : 'INTERRUPTED', {
                     cleanup, recoveredAt: Date.now(), ...(rejectedCreate ? { outcome: 'unavailable' } : {}),
+                    ...(interruptedOwnerDialog ? {interruptedOwnerDialog} : {}),
                 });
                 this.store.setWorkStateAt(run.work, held ? 'UNKNOWN' : rejectedCreate ? 'ACTIVE' : 'INTERRUPTED', run.epoch, run.generation);
                 if (rejectedCreate) {
@@ -3923,6 +3993,16 @@ export class Controller {
                 }
             });
         }
+        // Older startup recovery left the queue on the conversation even after clean runtime settlement.
+        this.store.tx(() => {
+            for (const run of this.store.all(`SELECT r.* FROM conversation_state t JOIN runs r ON r.work=t.work AND
+                CASE WHEN length(CAST(t.data AS BLOB))<=65536 AND json_valid(t.data) THEN
+                    r.id=json_extract(t.data,'$.runId') AND json_array_length(t.data,'$.dialogs')>0 END
+                WHERE r.phase='INTERRUPTED' AND length(CAST(r.data AS BLOB))<=65536`)) {
+                const interruptedOwnerDialog = captureInterruptedOrdinaryDialog(this.store, run, parse(run.data));
+                if (interruptedOwnerDialog) this.patchRun(run.id, 'INTERRUPTED', {interruptedOwnerDialog});
+            }
+        });
     }
     close(): Promise<void> {
         if (this.closing)

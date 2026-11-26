@@ -9,6 +9,8 @@ import { ApplicationAccounts } from '../../dist/app/accounts.js';
 import { managedModelGuidance, managedModelRepairDetail, managedModelRepairState } from '../../dist/ui/managed-model-guidance.js';
 import { HostCommands } from '../../dist/ui/host-commands.js';
 import { readinessCommands } from '../../dist/ui/readiness-commands.js';
+import { inspectOriginalPrerequisites } from '../../dist/ui/work-recovery-guidance.js';
+import { inspectWorkResumeEntry } from '../../dist/ui/work-resume-entry.js';
 
 function repairDetail(c, workId, assessment) {
     return managedModelRepairDetail(workId, assessment, managedModelRepairState(c, c.inspectChange(workId).state, assessment));
@@ -315,6 +317,24 @@ test('original provider repair is directly selectable without rebinding retained
  const f=await createManagedWorkFixture(t,['current']);const baseline=f.c.getWorkApplicationModelBaseline(f.work.workId),choice=f.c.getConversationModelChoice(f.view.conversationId);let sent;
  const commands=new HostCommands(readinessCommands({...f.host,isCurrent:()=>true,show:async()=>{},choose:async(title,rows)=>sent?rows.at(-1):title==='Choose a recovery action'?rows.find(r=>r==='Connect original provider base'):rows[0],execute:async(command,target)=>{sent={command,target};return'cancelled';}}));
  await commands.execute('/ready',f.view.conversationId);assert.deepEqual(sent,{command:'/login base',target:f.view.conversationId});assert.deepEqual(f.c.getWorkApplicationModelBaseline(f.work.workId),baseline);assert.deepEqual(f.c.getConversationModelChoice(f.view.conversationId),choice);assert.equal(f.c.inspectChange(f.work.workId).execution.consumed,1);
+});
+test('original-work prerequisite text uses the captured provider and current runtime',async t=>{
+ const f=await createManagedWorkFixture(t,['current']), id=f.work.workId;
+ const baseline=f.c.getWorkApplicationModelBaseline(id),choice=f.c.getConversationModelChoice(f.view.conversationId);
+ const read=()=>{
+  const work=f.c.inspectWorkRecovery(id);
+  return inspectOriginalPrerequisites(f.host,work,inspectWorkResumeEntry(f.c,work,true),'en')?.directions.join('\n') ?? '';
+ };
+ assert.match(read(),/Connect the original stage provider base with \/login base/);
+ assert.doesNotMatch(read(),/\/login current|No execution runtime/);
+ const runtime=f.c.options.runtimeProfile;
+ try {
+  f.c.options.runtimeProfile=undefined;
+  assert.match(read(),/No execution runtime is active/);
+ } finally { f.c.options.runtimeProfile=runtime; }
+ assert.deepEqual(f.c.getWorkApplicationModelBaseline(id),baseline);
+ assert.deepEqual(f.c.getConversationModelChoice(f.view.conversationId),choice);
+ assert.equal(f.c.inspectChange(id).execution.consumed,1);
 });
 test('held original work offers inspection and reviewed cancellation, not account mutation or model replacement',async t=>{
  const f=await createManagedWorkFixture(t,['current'],{},false);let sent;

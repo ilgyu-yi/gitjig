@@ -1,8 +1,11 @@
 import { commandNameKeys } from './command-input.js';
 import { CombinedAutocompleteProvider, type AutocompleteItem, type AutocompleteProvider, type SlashCommand } from '@earendil-works/pi-tui';
 import { uiText, type MessageId, type UiLocale } from './i18n.js';
+import type { DelegatedRecovery } from './recorded-delegated-result.js';
 export type HostCommandOutcome = 'completed' | 'cancelled' | 'started';
 export interface HostCommandContext {
+    delegatedRecovery?: { record: DelegatedRecovery; isCurrent(): boolean };
+    delegatedSetupGuard?: () => void;
     acknowledgeSubmission?: () => void;
     runtimeSetupFocus?: 'context' | 'image';
     modelSelectionGuard?: () => void;

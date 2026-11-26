@@ -1,18 +1,16 @@
 import { isDeepStrictEqual } from 'node:util';
 import type { Controller } from '../controller/controller.js';
 import { ControllerError } from '../controller/types.js';
-import type { WorkflowCriteriaHold } from '../controller/change-types.js';
 import { isWorkSettlementUnconfirmed } from '../controller/work-recovery.js';
 import type { HostCommand, HostCommandOutcome, HostCommandExecutor } from './host-commands.js';
 import { showExactInspection, showExactReview, type ReviewPageHost } from './exact-review.js';
 import { reviewChangeResult } from './change-commands.js';
 import { uiText, translator, type UiLocale } from './i18n.js';
-import { availableWorkAllowance, limitedSharedAllowanceText, workAllowanceText, type ContinuationAllowanceHold } from './work-allowance-presentation.js';
+import { availableWorkAllowance, workAllowanceText } from './work-allowance-presentation.js';
 import { reviewCriteriaRefresh } from './criteria-refresh.js';
 import { truncateToWidth } from '@earendil-works/pi-tui';
 import { conversationDisplayIdentity, plainTerminalText } from './chrome.js';
-import { modelContextPresentation } from './model-context-presentation.js';
-import { producerFailurePresentation, roleRequestLimitPresentation } from './planning-failure-presentation.js';
+import { workOriginGuidance, workRecoveryGuidance } from './work-recovery-guidance.js';
 import { ownerActivationGuidance } from './startup-guidance.js';
 import { inspectWorkResumeEntry, workOriginLifecycle } from './work-resume-entry.js';
 import { escapeDisplayControls } from './inspection-text.js';
@@ -26,34 +24,6 @@ const workMenuSource = (work: ReturnType<Controller['inspectWorkRecovery']>) => 
 ];
 const workOriginScope = (work: ReturnType<Controller['inspectWorkRecovery']>) =>
     [work.workId, work.epoch, work.generation, work.sourceId, work.projectId, work.conversationId];
-function workRecoveryGuidance(work: ReturnType<Controller['inspectWorkRecovery']>, locale: UiLocale, allowanceHold: ContinuationAllowanceHold, live: boolean) {
-    const hold = work.recoveryHold, t = translator(locale);
-    const settlementUnconfirmed = isWorkSettlementUnconfirmed(work.state);
-    if (!hold && !allowanceHold && !live && !settlementUnconfirmed && !work.heldDirectionCount) return [];
-    const continuationGuidance = [
-        ...(live ? [t('workRecovery.live')] : []),
-        ...(work.heldDirectionCount ? [t('workRecovery.heldDirections', {count:work.heldDirectionCount})] : []),
-        ...(allowanceHold ? [t('workRecovery.allowanceNeeded', { action: t(`workRecovery.${allowanceHold}`) })] : []),
-        ...(work.governed ? limitedSharedAllowanceText(locale, work) : []),
-    ];
-    if (!hold) return settlementUnconfirmed
-        ? [t('workRecovery.settlementUnconfirmed'), ...continuationGuidance] : continuationGuidance;
-    const criteriaHold: WorkflowCriteriaHold | undefined = hold.kind === 'blocked' ? hold.workflowCriteriaHold : undefined;
-    let reason: string;
-    if (hold.kind === 'blocked') {
-        const { roleRequestLimit, ...otherDiagnostics } = hold;
-        const failure = modelContextPresentation(hold.modelContextFailure, work.workId, locale)?.title
-            ?? roleRequestLimitPresentation(roleRequestLimit, work.workId, locale)?.summary
-            ?? producerFailurePresentation({ workId: work.workId, ...otherDiagnostics }, locale)?.title;
-        const preview = truncateToWidth(plainTerminalText(hold.blocker ?? '').replace(/\s+/gu, ' ').trim(), 100, '…');
-        reason = work.activationPending ? t('workRecovery.activationPending') : criteriaHold ? t(`criteria.recovery.${criteriaHold}`)
-            : failure ?? (preview ? t('workRecovery.blocker', {reason:preview}) : t('workRecovery.blocked'));
-    } else {
-        reason = t(hold.kind === 'settlement' ? 'workRecovery.settlementUnconfirmed' : 'workRecovery.guidanceUnavailable');
-    }
-    return [reason, ...(criteriaHold === 'unavailable' ? [t('criteria.recovery.unavailableAction')] : []),
-        ...continuationGuidance, t('workRecovery.readResult', {action:t('result.view')})];
-}
 interface WorkHost extends ReviewPageHost, UiChoiceHost {
     controller: Controller;
     isCurrent(target: string): boolean;
@@ -181,8 +151,7 @@ export function workCommands(host: WorkHost): HostCommand[] {
                         ];
                         const title = t('workRecovery.title',{id,state:work.state});
                         const guidance = workRecoveryGuidance(work, locale, allowanceHold, live);
-                        const originGuidance = originBlocked ? t(origin?.deleted ? 'workRecovery.originDeleted' : origin?.archived
-                            ? 'workRecovery.originArchived' : 'workRecovery.originUnavailable', {conversation: work.conversationId}) : undefined;
+                        const originGuidance = workOriginGuidance(work, origin, originBlocked, locale);
                         const picked = await choose([title, ...(refreshMessage ? [refreshMessage] : []), ...guidance,
                             ...(originGuidance ? [originGuidance] : [])].join('\n'), options.map(([,label])=>label));
                         refreshMessage = undefined;

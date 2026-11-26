@@ -9,6 +9,7 @@ export type ManagedModelIssue = {
 } & ({ kind: 'account' | 'bridge'; provider: string } | { kind: 'account-config' | 'role-config' | 'external' });
 export interface ManagedModelGuidance {
     stage: string;
+    roles?: readonly Role[];
     issues: ManagedModelIssue[];
     messages: string[];
     allowanceHold?: 'execution' | 'resolution' | undefined;
@@ -121,12 +122,7 @@ export function managedModelRepairDetail(workId: string, assessment: ManagedMode
         t('managedRepair.inspectBody', { command: `/change inspect ${workId}` }),
     ];
     if (state === 'available') {
-        paragraphs.push(...assessment.issues.map(issue => {
-            if (issue.kind !== 'account') return t(`managedRepair.fix.${issue.kind}`);
-            const provider = issue.provider;
-            const command = providerLoginCommand(provider);
-            return t(command === '/login' ? 'managedRepair.fix.accountPicker' : 'managedRepair.fix.account', { command, provider });
-        }));
+        paragraphs.push(...managedModelRepairDirections(assessment, locale));
     } else {
         const next = state === 'held-cancelled'
             ? t('managedRepair.alreadyCancelled')
@@ -135,4 +131,14 @@ export function managedModelRepairDetail(workId: string, assessment: ManagedMode
     }
     paragraphs.push(t('managedRepair.resumeBody', { command: `/change resume ${workId}` }));
     return paragraphs.join('\n\n');
+}
+
+export function managedModelRepairDirections(assessment: ManagedModelGuidance, locale: UiLocale) {
+    const t = translator(locale);
+    return assessment.issues.map(issue => {
+        if (issue.kind !== 'account') return t(`managedRepair.fix.${issue.kind}`);
+        const provider = issue.provider;
+        const command = providerLoginCommand(provider);
+        return t(command === '/login' ? 'managedRepair.fix.accountPicker' : 'managedRepair.fix.account', { command, provider });
+    });
 }

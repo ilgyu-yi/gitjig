@@ -74,7 +74,7 @@ test('bounded handoff omits whole paths and entries, adds omissions and retains 
     assert.equal(result.inspection.command,'/work W');
 });
 
-test('a blocked result projects only the authenticated provider reset fact within its existing bound', () => {
+test('a blocked result projects the authenticated provider reset and affected role within its existing bound', () => {
     const result = reading();
     Object.assign(result, {state:'ACTIVE',recordedPhase:'BLOCKED',reviewReady:false});
     const quota = {version:1,kind:'usage-limit',ownerSessionId:'owner',nativeSessionId:'native',queryId:'query',
@@ -82,6 +82,7 @@ test('a blocked result projects only the authenticated provider reset fact withi
     result.providerFailure = {role:'adjudicator',launchId:'launch',usageLimit:quota};
     const compact = recordedResultSummary(result);
     assert.equal(compact.providerUsageLimitReset, quota.resetsAt);
+    assert.equal(compact.providerUsageLimitRole, 'adjudicator');
     assert.equal(compact.providerFailure, undefined);
     assert.ok(Buffer.byteLength(JSON.stringify(compact)) <= 4096);
     delete result.providerFailure;
@@ -90,6 +91,7 @@ test('a blocked result projects only the authenticated provider reset fact withi
     delete quota.resetsAt;
     assert.equal(recordedResultSummary(result).providerUsageLimitReset, null);
     assert.equal(recordedResultSummary({...result,state:'UNKNOWN'}).providerUsageLimitReset, undefined);
+    assert.equal(recordedResultSummary({...result,state:'UNKNOWN'}).providerUsageLimitRole, undefined);
     quota.ownerSessionId = 'unverifiable';
     quota.resetsAt = '1794020400';
     assert.equal(recordedResultSummary(result).providerUsageLimitReset, undefined);

@@ -157,13 +157,17 @@ export function taskPresentation({ view, roster, changeActivity, goal, locale, w
         if (!target) { awaited.push({label, status: uiText(locale, 'task.awaitedUnknown'), attention: false}); continue; }
         // Reuse current task/role presentation once, without a wait projection or
         // unrelated relationships. This does not walk a dependency graph.
+        const targetActivity = waitActivities?.find(activity => activity.workId === item.workId);
         const summary = taskPresentation({view: target, roster: roster.filter(other => other.conversationId === target.conversationId ||
             !!item.workId && other.workId === item.workId && !!other.role),
-            changeActivity: waitActivities?.find(activity => activity.workId === item.workId), locale, roleNative});
-        const outcome = item.state === 'UNAVAILABLE' ? 'task.awaitedUnavailable' : item.state === 'CANCELLED' ? 'task.awaitedCancelled' : item.state === 'RECOVERY_READY' ? 'task.awaitedRecovery' : undefined;
+            changeActivity: targetActivity, locale, roleNative});
+        const outcome = item.cleanupUnconfirmed ? 'workRecovery.settlementUnconfirmed' : item.state === 'UNAVAILABLE' ? 'task.awaitedUnavailable' :
+            item.state === 'CANCELLED' ? 'task.awaitedCancelled' : item.state === 'RECOVERY_READY' ? 'task.awaitedRecovery' : undefined;
         const physical = ['UNKNOWN', 'SETTLING'].includes(target.state);
-        awaited.push({label, status: physical ? summary.resourceLabel : target.inputNeeded ? summary.navigatorSummary : outcome ? uiText(locale, outcome) :
-            item.state === 'QUEUED' ? uiText(locale, 'task.awaitedQueued') : summary.idleStatus ?? summary.navigatorSummary,
+        const stopped = item.state === 'UNAVAILABLE' && item.resultId && targetActivity?.recordedRoleRequestLimit ? summary.idleStatus : undefined;
+        awaited.push({label, status: item.cleanupUnconfirmed ? uiText(locale, 'workRecovery.settlementUnconfirmed') :
+            physical ? summary.resourceLabel : target.inputNeeded ? summary.navigatorSummary : stopped ?? (outcome ? uiText(locale, outcome) :
+            item.state === 'QUEUED' ? uiText(locale, 'task.awaitedQueued') : summary.idleStatus ?? summary.navigatorSummary),
             attention: summary.attention || !!outcome});
     }
     for (const item of awaited) lines.push(uiText(locale, 'task.awaitedTarget', {target: item.label, status: item.status}));

@@ -132,7 +132,7 @@ for(const locale of ['en','ko'])test(locale+' quota failure explains waiting acr
  const initial=await tasks[0],seed=seedPlanningQuota(f.c,initial.workId),current=f.c.inspectChange(seed.workId),activity=f.c.inspectChangeActivity(seed.workId),view=f.c.inspectConversation(f.cid),before=workLedger(f.c);
  const expected=planningFailurePresentation(current.planningFailure,seed.workId,locale),text=changeResultText(f.c.inspectChangeResult(seed.workId),locale);
  assert.match(expected.title,locale==='ko'?/사용 한도/:/usage limit/);
- assert.match(expected.details,locale==='ko'?/기다린 뒤 계정/:/Wait and check your account/);
+ assert.match(expected.details,locale==='ko'?/당시 사용한 계정의 현재 한도/:/Check the original account's current limits/);
  assert.match(expected.details,/2026/);assert.match(expected.details,/GMT/);assert.match(expected.details,locale==='ko'?/보장되지/:/does not guarantee/);
  assert.match(text,/Original account limit rejection/);assert.ok(text.includes(expected.details));
  assert.equal(taskPresentation({view,roster:[view],changeActivity:activity,locale}).idleStatus,expected.summary);
@@ -156,7 +156,7 @@ for(const locale of ['en','ko'])for(const [role]of normalQuotaStages)test(locale
  await commands.execute('/change start Controlled normal quota display',f.cid);
  const initial=await tasks[0],seed=seedNormalQuota(f.c,initial.workId,role),current=f.c.inspectChange(seed.workId),activity=f.c.inspectChangeActivity(seed.workId),view=f.c.inspectConversation(f.cid),before=workLedger(f.c);
  const expected=providerFailurePresentation(current.providerFailure.usageLimit,seed.workId,locale),text=changeResultText(f.c.inspectChangeResult(seed.workId),locale);
- assert.equal(current.planningFailure,undefined);assert.match(expected.title,locale==='ko'?/사용 한도/:/usage limit/);assert.match(expected.details,locale==='ko'?/기다린 뒤 계정/:/Wait and check your account/);
+ assert.equal(current.planningFailure,undefined);assert.match(expected.title,locale==='ko'?/사용 한도/:/usage limit/);assert.match(expected.details,locale==='ko'?/당시 사용한 계정의 현재 한도/:/Check the original account's current limits/);
  assert.doesNotMatch(expected.details,/planning stage|계획 단계/);assert.match(expected.details,/2026/);assert.match(expected.details,/GMT/);assert.ok(text.includes(expected.details));assert.match(text,/Original account limit rejection/);
  assert.equal(taskPresentation({view,roster:[view],changeActivity:activity,locale}).idleStatus,expected.summary);assert.equal(managedChangeCompletionNotice(current,current,activity,view,locale),expected.summary);
  for(const operand of ['prior','activity'])for(const key of ['launchId','role','reset']){

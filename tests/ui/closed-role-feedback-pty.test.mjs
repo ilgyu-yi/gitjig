@@ -34,8 +34,11 @@ for(const [locale,configuredModel,workUnavailable=false] of [['en',true],['ko',t
         ] : []),
         {wait:uiText(locale,'input.feedbackTitle'),send:uiText(locale,'input.keepFeedback')+'\r'},
         ...(workUnavailable ? [{
-            wait:'Feedback kept on task '+workId,assertDraft:'',expectedInputs:1,
+            wait:uiText(locale,'workRecovery.recordUnavailableTitle',{id:workId}),assertDraft:'',expectedInputs:1,
             queries:[{sql:'SELECT state FROM conversation_inputs',rows:[['CONFLICTED']]},{sql:'SELECT COUNT(*) FROM runs',rows:[[before.runs.length]]}],
+            send:'\x1b',
+        },{
+            wait:'INPUT',assertDraft:'',expectedInputs:1,
             send:'/work '+workId+'\x1b\r',
         }] : []),
         {wait:uiText(locale,'workRecovery.title',{id:workId,state:''}).trimEnd().replace(/ ·$/u,''),assertDraft:'',expectedInputs:1,queries:[{sql:'SELECT state FROM conversation_inputs',rows:[['CONFLICTED']]},{sql:'SELECT COUNT(*) FROM runs',rows:[[before.runs.length]]}],send:'\x1b'},
@@ -45,6 +48,7 @@ for(const [locale,configuredModel,workUnavailable=false] of [['en',true],['ko',t
     try{
         const result=JSON.parse((await execute('/usr/bin/python3',[fileURLToPath(new URL('../cli/fork-ui-pty.py',import.meta.url)),file],{timeout:16000,maxBuffer:2**20})).stdout);assert.equal(result.exitCode,0);assert.equal(result.stages,steps.length);assert.equal(result.terminalRestored,true);
         const terminal=await fs.readFile(output,'utf8');assert.doesNotMatch(terminal,/The response could not be completed|Use the original governed assignment entry|Project runtime is not configured|No model resolution for recording role feedback|Command cancelled · draft kept/);
+        if(workUnavailable)assert.ok(terminal.includes(uiText(locale,'input.feedbackKept',{work:workId})));
         assert.equal(terminal.includes(uiText(locale,'input.recoveryList')),reopen);
         const db=new DatabaseSync(path.join(home,'state/controller.sqlite'),{readOnly:true});try{for(const [name,rows]of Object.entries(before))assert.deepEqual(db.prepare('SELECT * FROM '+name+' ORDER BY rowid').all().map(row=>({...row})),rows);
             assert.equal(db.prepare('SELECT raw FROM sources WHERE id=(SELECT source FROM conversation_inputs)').get().raw,text);
