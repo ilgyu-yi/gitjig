@@ -18,13 +18,15 @@ Managed sessions disable Pi installation telemetry. The CLI ignores `PI_TELEMETR
 
 ## Supported scope
 
-[Current capabilities and limits](capabilities.md) describes the supported environment. Catalogue presence does not establish account entitlement or successful execution. The bridge graph uses gitjig's maintained derivative of upstream 0.9.0 with Claude SDK 0.3.284; Pi is official 1.3.0. The root dependency manifest and lockfile record the exact derivative version.
+[Current capabilities and limits](capabilities.md) describes the supported environment. Catalogue presence does not establish account entitlement or successful execution. The bridge graph uses gitjig's maintained derivative of upstream 0.9.0 with Claude SDK 0.3.284; Pi is official 1.6.1. The root dependency manifest and lockfile record the exact derivative version.
 
 The Claude bridge preserves the native client's built-in security and privacy policies. Built-in components are recognized by their native origin rather than an account-specific policy list. Optional authoring and user plugins are excluded; the original role-filtered tool and MCP checks still apply, without bypassing native permission denials. Native organization policy can run its configured hooks outside the project executor. Native process ownership and cleanup apply to that route; project isolation does not certify those policy actions.
 
 Open `/bridge` for active and saved connection status and the available next actions. Choose **Connection details** to see the setup scope and any recorded setup diagnostic. The native login check reports account status. Session compatibility is checked when the selected client starts a model request. If the terminal reports a Claude session-profile or plugin metadata problem, open `/error` to see the recorded diagnostic and review the connection or choose a model for this conversation. Those choices are available after reopening while the original failed attempt is still current and its recorded profile diagnostic can be verified. Opening them keeps the original request and history.
 
 Provider availability, account entitlement and billing terms depend on the selected external service. Support for one model does not establish support for every catalogue model. No configured path silently replaces a subscription with API billing.
+
+GPT-6.2 Sol is listed as `openai/gpt-6.2-sol` for the OpenAI API and `openai-codex/gpt-6.2-sol` for the Codex OAuth route. Select the provider that corresponds to your account. The model requires reasoning, so Pi selects a supported reasoning level when the preference is off. Account access and billing depend on the selected provider.
 
 ## Explicit external stored-credential profiles
 

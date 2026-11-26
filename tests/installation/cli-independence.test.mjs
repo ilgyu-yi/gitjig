@@ -24,7 +24,7 @@ test('fresh immutable installed CLI owns accounts models setup and resumed origi
   const database=path.join(home,'state/controller.sqlite'),readDatabase=()=>fs.readFile(database).catch(error=>{if(error.code==='ENOENT')return undefined;throw error;}),beforeBare=await readDatabase();
   assert.match(await run(launcher,[],'bare-nonterminal'),/auth login/);assert.deepEqual(await readDatabase(),beforeBare);await assert.rejects(fs.access(path.join(root,'user/.gitjig')),{code:'ENOENT'});
   const payload=path.join(home,'versions',built.payloadId),node=path.join(home,'bootstrap/node');assert.equal(sha(await fs.readFile(node)),manifest.platform.sha256);
-  const identity=await cli(['--version'],'version');assert.equal(identity.application,'gitjig');assert.equal(identity.piSdkVersion,'1.3.0');assert.match(await run(launcher,['--help'],'help'),/auth login/);await cli(['auth','status'],'auth-initial');await cli(['setup','inspect'],'setup-empty');await cli(['project','register','--id','CONTEXT','--root',project],'project');
+  const identity=await cli(['--version'],'version');assert.equal(identity.application,'gitjig');assert.equal(identity.piSdkVersion,'1.6.1');assert.match(await run(launcher,['--help'],'help'),/auth login/);await cli(['auth','status'],'auth-initial');await cli(['setup','inspect'],'setup-empty');await cli(['project','register','--id','CONTEXT','--root',project],'project');
   // Only the original local API-key method is selected; no OAuth/service login.
   const secretFile=path.join(root,'synthetic-key.private'),secret='DUMMY_FINAL_MASKED_'+sha(Buffer.from(root)).slice(0,20);await fs.writeFile(secretFile,secret,{mode:0o600});
   const authTerminal=await pty('accounts',['conversation','ui','--project','CONTEXT'],[

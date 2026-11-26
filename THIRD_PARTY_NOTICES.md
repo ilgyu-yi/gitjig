@@ -4,7 +4,7 @@ The root MIT license applies to gitjig. Dependencies retain their own licenses.
 
 ## Official Pi SDK
 
-The official `@earendil-works/pi-ai`, `@earendil-works/pi-coding-agent` and `@earendil-works/pi-tui` packages are pinned to 1.3.0 in the lockfile. Their sources are not vendored or modified here. Each declares the MIT license in its package metadata; none of the three ships a separate LICENSE file. Preserve their package metadata when distributing an installation.
+The official `@earendil-works/pi-ai`, `@earendil-works/pi-coding-agent` and `@earendil-works/pi-tui` packages are pinned to 1.6.1 in the lockfile. Their sources are distributed by the original packages under their declared MIT license. Preserve their package metadata when distributing an installation. Gitjig uses TypeBox 1.3.27 under its MIT license to define the schemas passed to Pi.
 
 The seven compatibility metadata names in gitjig's `src/pi/sdk-metadata.ts` come from Pi coding-agent 1.3.0 `dist/core/provider-attribution.js`, under the package's declared MIT license. The copied surface consists of names, not provider routing or authentication-header values.
 

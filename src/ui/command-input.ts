@@ -65,16 +65,19 @@ const hostFunctionKeys: ReadonlySet<string> = new Set(Object.values(reportedFunc
 
 /** Direct host commands supplement Pi's legacy F-key matcher with Kitty event reporting. */
 export function hostFunctionKey(data: string): { key: HostFunctionKey; press: boolean } | undefined {
+    // Caps/Num Lock do not change the binding. CSI R remains a cursor position response.
+    const match = /^\x1b\[(\d{1,2})?(?:;(?:1|65|129|193)(?::([123]))?)?([QS~])$/u.exec(data);
+    if (match?.[0] === data) {
+        const [, code = '1', event = '1', suffix] = match;
+        const key = reportedFunctionKeys[(code + suffix) as keyof typeof reportedFunctionKeys];
+        return key ? { key, press: event === '1' } : undefined;
+    }
+    // A malformed event report cannot fall through to a legacy press.
+    if (/^\x1b\[\d{1,2};/u.test(data))
+        return;
     const legacy = parseKey(data);
     if (legacy !== undefined && hostFunctionKeys.has(legacy))
         return { key: legacy as HostFunctionKey, press: !isKeyRepeat(data) && !isKeyRelease(data) };
-    // Caps/Num Lock do not change the binding. CSI R remains a cursor position response.
-    const match = /^\x1b\[(\d{1,2})?(?:;(1|65|129|193)(?::([123]))?)?([QS~])$/u.exec(data);
-    if (match?.[0] !== data)
-        return;
-    const [, code = '1', , event = '1', suffix] = match;
-    const key = reportedFunctionKeys[(code + suffix) as keyof typeof reportedFunctionKeys];
-    return key ? { key, press: event === '1' } : undefined;
 }
 
 /** Share explicit modified-key identity with native Pi editors and dialogs. */

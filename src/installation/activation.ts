@@ -7,6 +7,9 @@ import { DatabaseSync } from 'node:sqlite';
 import { acquireOwner, privateDirectory, privateFile } from '../controller/ownership.js';
 import { stageBundleCandidate, writeOwnedJson, backupOwnedDatabase } from './transaction.js';
 import { assetIdentity, copyAssetTree, inventoryTree } from './tree.js';
+import { installationSdkVersion } from './handshake.js';
+import { readPrivateBytes } from './private-files.js';
+import type { Asset } from './tree.js';
 const hash = (data: Uint8Array) => createHash('sha256').update(data).digest('hex');
 interface Binding {
     format: 1;
@@ -91,7 +94,15 @@ async function handshake(home: string, payloadId: string, id: string) {
     const root = await namespace(home, id);
     const output = await candidateCommand(home, payloadId, 'handshake.js', [root], path.join(root, 'artifacts'));
     const receipt = JSON.parse(output.stdout);
-    if (receipt.liveStanding !== false || receipt.sdk?.version !== '1.3.0' || receipt.roles?.length !== 7)
+    const payload = path.join(home, 'versions', payloadId);
+    const manifest = JSON.parse((await readPrivateBytes(path.join(home, 'manifests', payloadId + '.json'), 16 * 1024 * 1024)).toString('utf8'));
+    if (manifest.payloadId !== payloadId || !Array.isArray(manifest.assets) || assetIdentity(manifest.assets) !== payloadId)
+        throw Error('Handshake payload inventory differs');
+    const asset = (manifest.assets as Asset[]).find(entry => entry.path === 'package.json' && entry.kind === 'file');
+    const packageBytes = await readPrivateBytes(path.join(payload, 'package.json'), 1024 * 1024);
+    if (asset?.kind !== 'file' || packageBytes.length !== asset.bytes || hash(packageBytes) !== asset.sha256 ||
+        receipt.payloadRoot !== payload || receipt.liveStanding !== false || receipt.sdk?.version !== installationSdkVersion(packageBytes) ||
+        receipt.sdk.packageDir !== path.join(payload, 'node_modules/@earendil-works/pi-coding-agent') || receipt.roles?.length !== 7)
         throw Error('Incomplete actual installed handshake');
     await writeOwnedJson(path.join(root, 'receipt.json'), receipt);
     return root;

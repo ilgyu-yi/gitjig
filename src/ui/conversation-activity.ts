@@ -263,7 +263,7 @@ export class ConversationActivity extends Text {
         const label = this.statusLabel();
         return visibleWidth(label) <= width ? label : this.statusLabel(true);
     }
-    override render(width: number): string[] {
+    override render(width: number): readonly string[] {
         const now = performance.now(), elapsed = Math.floor((now - this.started) / 1000);
         const silence = this.state === 'RUNNING' && !this.options.cancelling && this.options.operation == null && this.lastOutput !== undefined
             ? Math.floor((now - this.lastOutput) / 1000) : 0;

@@ -39,7 +39,7 @@ test('actual gitjig settings CLI bootstraps without model/engine and never follo
     assert.equal(identity.code, 0, identity.stderr);
     const version = JSON.parse(identity.stdout);
     assert.equal(version.application, 'gitjig');
-    assert.equal(version.piSdkVersion, '1.3.0');
+    assert.equal(version.piSdkVersion, '1.6.1');
     result = await run(['settings', 'set', '--key', 'theme', '--value', '"dark"']);
     assert.equal(result.code, 0, result.stderr);
     assert.equal(JSON.parse(result.stdout).settings.effective.theme, 'dark');
