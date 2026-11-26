@@ -26,6 +26,7 @@ export class NativePane {
     readonly scroll: LayoutScrollView;
     readonly status = new Text('', 0, 0);
     readonly recordedResultStatus = new Text('', 0, 0);
+    readonly outgoing = new Text('', 0, 0);
     readonly activity: ConversationActivity;
     readonly layout: VStack;
     private session: AgentSession | undefined;
@@ -50,7 +51,7 @@ export class NativePane {
             if (!this.pendingScroll)
                 this.restoreScroll(this.scrollAnchor());
         };
-        this.layout = new VStack([{ component: this.status, basis: 'auto', shrink: 0 }, { component: this.recordedResultStatus, basis: 'auto', shrink: 0 }, { component: new DynamicBorder(), basis: 'auto', shrink: 0 }, { component: this.scroll, basis: 0, grow: 1, minSize: 1 }, { component: this.activity, basis: 'auto', shrink: 0 }, { component: this.editor, basis: 'auto', shrink: 0 }]);
+        this.layout = new VStack([{ component: this.status, basis: 'auto', shrink: 0 }, { component: this.recordedResultStatus, basis: 'auto', shrink: 0 }, { component: new DynamicBorder(), basis: 'auto', shrink: 0 }, { component: this.scroll, basis: 0, grow: 1, minSize: 1 }, { component: this.outgoing, basis: 'auto', shrink: 0 }, { component: this.activity, basis: 'auto', shrink: 0 }, { component: this.editor, basis: 'auto', shrink: 0 }]);
         this.editor.onAction('app.tools.expand', () => { this.expanded = !this.expanded; this.refresh(); });
     }
     setActive(active: boolean): void { this.scroll.primary = active; }

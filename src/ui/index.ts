@@ -128,6 +128,7 @@ interface ViewCache {
     /** Dispatched responses not yet settled; their own requests are progress, not retained input. */
     dispatching?: number;
     startingInputId?: string | undefined;
+    recentAcceptedInputId?: string;
     responseStatus?: (Pick<LiveConversationTurnResult, 'status' | 'cleanup' | 'workId' | 'runId' | 'generation'> & { directionRevision?: number }) | undefined;
     standaloneOutcome?: { text: string; generation: number; projectId: string | null } | undefined;
 }
@@ -901,7 +902,9 @@ export async function startConversationUI(options: StartConversationUIOptions): 
         const related = !!view.parentId || roster.some(other => !other.archived && !other.deleted && other.parentId === view.conversationId);
         const simpleEntry = !related && !view.workId && !goal && !view.historyRef && !view.role && !roster.some(other => other.conversationId !== view.conversationId && !other.archived && !other.deleted);
         const progress = observations.progress(view);
-        const pendingInputs = controller.inspectConversationInputStatus(view.conversationId, progress?.initialInputId ?? cache.startingInputId);
+        const activeInputId = progress?.initialInputId ?? cache.startingInputId;
+        const previewInputId = cache.recentAcceptedInputId ?? activeInputId;
+        const pendingInputs = controller.inspectConversationInputStatus(view.conversationId, activeInputId, previewInputId);
         const responseActive = !!cache.dispatching || !!registration || ['QUEUED', 'RUNNING', 'SETTLING'].includes(view.state);
         if (failureIsActive(cache) && (cache.failure?.originalHoldIsActive?.() === false ||
             !responseActive && cache.failure?.code === 'PROJECT_RESPONSE_ACTIVE' && !controller.hasActiveConversationProducer(view.conversationId))) {
@@ -945,6 +948,14 @@ export async function startConversationUI(options: StartConversationUIOptions): 
             relations.push(chrome('attention', truncateToWidth(issue.message, paneWidth(), '…')));
         const cancellingHistory = !!cache.manualAbort?.signal.aborted;
         const safePreview = (text: string) => stripTerminalSequences(text).replace(/[\x00-\x1f\x7f-\x9f]/gu, ' ');
+        const outgoing = pendingInputs?.activeOwnerPreview;
+        let outgoingLine = '';
+        if (outgoing && !retainedInputs && !view.archived && !view.deleted) {
+            const chars = Array.from(outgoing);
+            const preview = safePreview(chars.slice(0, 160).join('')) + (chars.length > 160 ? '…' : '');
+            outgoingLine = chrome('context', truncateToWidth(uiText(paneLocale, 'pane.outgoing', {preview}), paneWidth(), '…'));
+        }
+        cache.pane.outgoing.setText(outgoingLine);
         cache.roleFeedbackEntry = cache.roleFeedbackDraft && !!view.role && !!view.workId && view.state === 'IDLE' && !view.archived && !view.deleted &&
             !registration && !pendingInputs && !cache.submitting && !cache.dispatching && !cache.preparingSend && !cache.startingResponse &&
             !cache.cancellingResponse && !cache.manualPending && !cache.manualAbort && !preparingTask && !view.inputNeeded &&
@@ -990,11 +1001,16 @@ export async function startConversationUI(options: StartConversationUIOptions): 
             const primary = progress?.initialInputId ?? cache.startingInputId;
             const primaryIndex = primary ? pendingInputs.waitingInputIds.indexOf(primary) : -1;
             const queued = pendingInputs.waiting - (pendingInputs.activeInputWaiting ? 1 : 0);
-            const next = pendingInputs.waitingPreviews[primaryIndex === 0 ? 1 : 0];
-            const nextMode = pendingInputs.waitingModes[primaryIndex === 0 ? 1 : 0];
+            const nextIndex = primaryIndex === 0 ? 1 : 0;
+            const next = pendingInputs.waitingPreviews[nextIndex];
+            const nextMode = pendingInputs.waitingModes[nextIndex];
             const modeLabel = uiText(localeFor(view.conversationId), nextMode === 'steer' ? 'input.mode.steer' : nextMode === 'follow-up' ? 'input.mode.follow-up' : 'input.mode.idle');
-            if (queued > 0 && next !== undefined)
-                relations.push(chrome('context', truncateToWidth(uiText(localeFor(view.conversationId), 'pane.queuedNext', { count: queued, mode: modeLabel, preview: safePreview(next) }), paneWidth(), '…')));
+            if (queued > 0 && next !== undefined) {
+                const notice = outgoingLine && pendingInputs.waitingInputIds[nextIndex] === previewInputId
+                    ? uiText(paneLocale, 'pane.queuedNextStatus', { count: queued, mode: modeLabel })
+                    : uiText(paneLocale, 'pane.queuedNext', { count: queued, mode: modeLabel, preview: safePreview(next) });
+                relations.push(chrome('context', truncateToWidth(notice, paneWidth(), '…')));
+            }
         }
         const activityLabel = cache.pane.activity.statusLabel();
         const headingStatus = (progress || preparingTask === activityLabel || retainedEntry) && !view.inputNeeded && !cache.dialogs.requestIds.length
@@ -1626,6 +1642,7 @@ export async function startConversationUI(options: StartConversationUIOptions): 
                     receipt.revision !== revision + 1 || receipt.text !== '')
                     return;
                 acceptedInputId = input.inputId;
+                cache.recentAcceptedInputId = input.inputId;
                 if (cache.revision !== revision)
                     return;
                 preparation.stage = 'received';
