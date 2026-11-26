@@ -96,8 +96,11 @@ export function readinessCommands(host: ReadinessHost): HostCommand[] {
                         return now;
                     };
                     readCurrentScope();
+                    const modelSetupReads = () => [
+                        host.accounts?.status() ?? Promise.resolve([]), host.models?.list() ?? Promise.resolve(undefined),
+                    ] as const;
                     const [startup, accounts, catalogue] = await Promise.allSettled([
-                        ApplicationStartup.open(host.controller).captureInspection(), host.accounts?.status() ?? Promise.resolve([]), host.models?.list() ?? Promise.resolve(undefined),
+                        ApplicationStartup.open(host.controller).captureInspection(), ...modelSetupReads(),
                     ]);
                     const view = readCurrentScope();
                     if (!sameSnapshot(view)) continue;
@@ -112,6 +115,7 @@ export function readinessCommands(host: ReadinessHost): HostCommand[] {
                         command: host.models ? startupUnavailable ? '/setup' : '/setup runtime' : undefined,
                     };
                     const modelList = catalogue.status === 'fulfilled' ? catalogue.value : undefined;
+                    const bridgeResource = host.controller.applicationModelResource();
                     const configured = accounts.status === 'fulfilled' ? accounts.value.filter(account => account.stored || account.configured) : undefined;
                     const directAccount = choice.kind === 'managed' && choice.provider !== 'claude-bridge' && host.accounts
                         ? directModelAccount(choice.provider, accounts.status === 'fulfilled' ? accounts.value : undefined, t) : undefined;
@@ -132,6 +136,8 @@ export function readinessCommands(host: ReadinessHost): HostCommand[] {
                         label: string;
                         command?: string | undefined;
                         detail?: string;
+                        setupStatus?: string;
+                        reviewDefaultModel?: string;
                         alternatives?: {
                             label: string;
                             command: string;
@@ -327,23 +333,36 @@ export function readinessCommands(host: ReadinessHost): HostCommand[] {
                                 detail: t('ready.externalBody', { command: restartCommand(host.controller.applicationHome(), target, undefined, undefined, ApplicationStartup.open(host.controller).continuationArguments(host.restartArguments ?? [])) + " --model-profile '/absolute/path/to/original-profile.json'" })
                             };
                         else if (!externalRoute && (host.models && catalogue.status === 'rejected' || host.accounts && accounts.status === 'rejected'))
-                            return { label: t('ready.repairNext'), command: '/model-repair' };
-                        else if (choice.kind === 'managed' && choice.provider === 'claude-bridge' && !host.controller.applicationModelResource())
-                            return startupView?.activation.bridge === 'relaunch' ? { label: t('ready.restartBridge'), detail: restart } : { label: t('ready.bridgeNext'), ...(host.models ? { alternatives: [{ label: t('ready.restoreBridge'), command: '/bridge' }, { label: t('ready.replaceModel'), command: '/model' }] } : {}) };
+                            return { label: t('ready.repairNext'), command: '/model-repair', setupStatus: t('ready.modelSetupUnknown') };
+                        else if (choice.kind === 'managed' && choice.provider === 'claude-bridge' && !bridgeResource)
+                            return startupView?.activation.bridge === 'relaunch' ? { label: t('ready.restartBridge'), detail: restart } :
+                                { label: t('ready.restoreBridge'), command: host.models ? '/bridge' : undefined, setupStatus: t('ready.bridgeInactive') };
+                        else if (choice.kind === 'managed' && choice.provider === 'claude-bridge' && modelList?.bridgeCatalogue === 'unavailable')
+                            return { label: t('ready.inspectBridgeNext'), command: '/setup inspect', setupStatus: t('model.route.bridge.unavailable') };
                         else if (choice.kind === 'managed' && host.models && modelList && !modelList.models.some(model => model.provider === choice.provider && model.id === choice.modelId))
-                            return { label: t('ready.replaceModelNext', { model: `${choice.provider}/${choice.modelId}` }), command: '/model' };
+                            return { label: t('ready.replaceModelNext', { model: `${choice.provider}/${choice.modelId}` }), command: '/model',
+                                setupStatus: t('ready.modelNotListed') };
                         else if (choice.kind === 'unbound' && !host.externalModel) {
                             if (startupView?.activation.bridge === 'relaunch' && !startupView.effective?.bridge)
                                 return { label: t('ready.restartBridge'), detail: restart };
-                            else if (future?.provider && future.model && modelList?.models.some(model => model.provider === future.provider && model.id === future.model))
-                                return { label: t('ready.defaultNext', { model: future.provider + '/' + future.model }), command: `/model ${future.provider}/${future.model}` };
-                            else if (host.accounts && configured?.length === 0 && !startupView?.effective?.bridge && !startupView?.saved?.bridge)
-                                return { label: t('ready.loginNext'), ...accountConnection };
-                            else
-                                return { label: t('ready.modelNext'), command: host.models ? '/model' : undefined };
+                            const bridgeAvailable = !!bridgeResource && modelList?.bridgeCatalogue === 'listed';
+                            const listedDefault = future?.provider && future.model &&
+                                modelList?.models.some(model => model.provider === future.provider && model.id === future.model) ? future : undefined;
+                            if (listedDefault?.provider && listedDefault.model &&
+                                (listedDefault.provider === 'claude-bridge' ? bridgeAvailable : configured?.some(account => account.provider === listedDefault.provider)))
+                                return { label: t('ready.defaultNext', { model: listedDefault.provider + '/' + listedDefault.model }),
+                                    reviewDefaultModel: listedDefault.provider + '/' + listedDefault.model, setupStatus: t('ready.defaultRouteConfigured') };
+                            if (accounts.status === 'fulfilled' && configured?.length === 0 && !startupUnavailable &&
+                                !startupView?.effective?.bridge && !startupView?.saved?.bridge && accounts.value.some(account => account.methods.length)) {
+                                const savedAccount = accounts.value.find(account => account.provider === listedDefault?.provider && account.methods.length);
+                                return { label: savedAccount ? t('ready.connectAccountFor', { provider: savedAccount.provider }) : t('ready.loginNext'),
+                                    command: savedAccount ? providerLoginCommand(savedAccount.provider) : '/login', setupStatus: t('ready.noAccountSetup') };
+                            }
+                            return { label: t('ready.modelNext'), command: host.models ? '/model' : undefined, setupStatus: t('ready.noCurrentModel') };
                         }
                         else if (choice.kind === 'managed' && directAccount?.needsLogin)
-                            return { label: t(/\s/u.test(choice.provider) ? 'ready.chooseAccountFor' : 'ready.connectAccountFor', { provider: choice.provider }), command: providerLoginCommand(choice.provider) };
+                            return { label: t(/\s/u.test(choice.provider) ? 'ready.chooseAccountFor' : 'ready.connectAccountFor', { provider: choice.provider }),
+                                command: providerLoginCommand(choice.provider), setupStatus: t('ready.accountMissing', { provider: choice.provider }) };
                         else if (unfinishedGoal && !view.projectId)
                             return { label: t('ready.goalNext'), command: '/goal' };
                         else if (view.projectId && !activeRuntime)
@@ -452,14 +471,15 @@ export function readinessCommands(host: ReadinessHost): HostCommand[] {
                     ] : [
                         item('next', next),
                         ...(host.show ? [item('getting-started', { label: t('ready.gettingStarted'), detail: t('ready.gettingStartedBody', { home: host.controller.applicationHome() }) })] : []),
-                        projectRow, modelRow,
-                        ...(host.accounts || externalRoute ? [accountRow] : []),
+                        projectRow,
+                        ...(!next.setupStatus ? [modelRow, ...(host.accounts || externalRoute ? [accountRow] : [])] : []),
                         ...(view.projectId || activeRuntime || startupView?.saved?.runtime ? [runtimeRow] : []),
                         ...startupActions,
                         item('more-settings', { label: t('ready.more') }),
                         item('return-request', { label: t('ready.returnRequest') }),
                     ];
                     const title = [t(details ? 'ready.detailsTitle' : 'ready.title'),
+                        ...(!details && next.setupStatus ? [next.setupStatus] : []),
                         ...(refreshNotice ? [t('ready.updated')] : []),
                         ...(inputsUnavailable && (details || next.label !== unavailableInput) ? [unavailableInput] : []),
                         ...(queueIssue && (details || next.label !== queueIssue) ? [queueIssue] : []),
@@ -485,6 +505,14 @@ export function readinessCommands(host: ReadinessHost): HostCommand[] {
                             const folder = await inspectProjectFolder(projectFolder.id);
                             now = readScope();
                             if (!sameSnapshot(now) || !isDeepStrictEqual(projectFolder, folder)) return false;
+                        }
+                        if (row.setupStatus) {
+                            const [currentAccounts, currentCatalogue] = await Promise.allSettled(modelSetupReads());
+                            if (accounts.status !== currentAccounts.status || accounts.status === 'fulfilled' && !isDeepStrictEqual(accounts, currentAccounts) ||
+                                catalogue.status !== currentCatalogue.status || catalogue.status === 'fulfilled' && !isDeepStrictEqual(catalogue, currentCatalogue) ||
+                                bridgeResource !== host.controller.applicationModelResource())
+                                return false;
+                            now = readScope();
                         }
                         return row.requestMethods ? localRequestCurrent(now) : workflowCurrent(now);
                     };
@@ -545,6 +573,18 @@ export function readinessCommands(host: ReadinessHost): HostCommand[] {
                         if (originalRepair) assertOriginalRepairCurrent();
                     }
                     let command = row.command;
+                    if (row.reviewDefaultModel) {
+                        const selectedModel = await chooseUiItem(host, t('ready.reviewDefaultModel', { model: row.reviewDefaultModel }), [
+                            { value: 'back', label: t('request.back') },
+                            { value: 'select', label: t('ready.selectDefaultModel') },
+                        ]);
+                        if (selectedModel !== 'select') continue;
+                        if (!await recommendationCurrent(assertCurrent()) || !nextActionOriginalCurrent() || !startupCurrent()) {
+                            refreshNotice = true;
+                            continue;
+                        }
+                        command = '/model ' + row.reviewDefaultModel;
+                    }
                     if (row.accountConnection) {
                         const source = await chooseUiItem(host, t('bridge.accountChoice'), [
                             { value: 'native', label: t('bridge.nativeAccount') },

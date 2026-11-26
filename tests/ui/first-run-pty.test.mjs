@@ -96,7 +96,6 @@ cp.spawn=(file,args,options)=>file===${JSON.stringify(binary)}?spawn(file,args,o
         { wait: 'Choose the existing project', send: '\x15' + source + '\r' },
         { wait: 'Press Enter to accept the suggested name', send: '\r' },
         { wait: 'Next step · Connect your model account', queries: empty, send: '\r' },
-        { wait: 'Choose model account source', queries: empty, send: 'Pi-managed provider account\r' },
         { wait: 'Pi account login', send: 'openai\r' },
         { wait: 'Login method', send: 'api_key\r' },
         { wait: 'Secret input (hidden)', send: secret + '\r' },

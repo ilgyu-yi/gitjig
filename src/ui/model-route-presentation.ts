@@ -23,8 +23,9 @@ export function providerLoginCommand(provider: string): string {
 
 export function directModelAccount(provider: string, accounts: readonly AccountView[] | undefined, t: T) {
     const account = accounts?.find(entry => entry.provider === provider);
-    const state = account?.stored ?? (account?.configured ? 'configured' : accounts ? 'missing' : 'unknown');
-    return { label: `${provider} · ${t(`model.route.account.${state}`)}`, needsLogin: state === 'missing' };
+    const state = account?.stored ?? (account?.configured ? 'configured' : account ? 'missing' : 'unknown');
+    const status = t(`model.route.account.${state}`);
+    return { status, label: `${provider} · ${status}`, needsLogin: state === 'missing' };
 }
 
 export function bridgeCatalogueLabel(state: BridgeCatalogueState, t: T): string {
