@@ -20,12 +20,12 @@ function scripted(tool) {
 /** Original native tools, child capture, allocation, publication and cancellation.
  * Governed procedure and external-effect outcomes are controlled; no engine/send/model endpoint is used.
  */
-export async function structuredAssignmentWorld(t, { originalGovernedDispatch = false, retainRoot = false, maxAssignments = 8, runtimeProfile } = {}) {
+export async function structuredAssignmentWorld(t, { originalGovernedDispatch = false, retainRoot = false, maxAssignments = 8, maxProviderRequests, runtimeProfile } = {}) {
     if (retainRoot) allPassed = false; // A dynamically imported owner controls its own cleanup order.
     sharedRoot??=await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(),'gitjig-structured-assignment-')));
     const root=sharedRoot,home=path.join(root,'home'),source=path.join(root,'source'),worldId=++worldSequence;
     await fs.mkdir(source,{recursive:true});await fs.writeFile(path.join(source,'file.txt'),'owned source');
-    const c=await openController({installationHome:home,interactionDelegation:{projectIds:['P'],maxAssignments},...(runtimeProfile?{runtimeProfile}:{})});
+    const c=await openController({installationHome:home,maxProviderRequests,interactionDelegation:{projectIds:['P'],maxAssignments},...(runtimeProfile?{runtimeProfile}:{})});
     process.env.TMPDIR=path.join(home,'artifacts');if(!c.listProjects().some(project=>project.id==='P'))await c.registerProject({id:'P',sourceRoot:source});const parent=c.createConversation().conversationId;
     let passed=false,expectedBackgroundFailure=false,child,effect,onGoverned=()=>{},onEffect=()=>{};
     t.after(async()=>{try{await c.close().catch(error=>{if(!expectedBackgroundFailure)throw error;});}finally{if(!passed){allPassed=false;t.diagnostic('Retained structured assignment '+root);}}});

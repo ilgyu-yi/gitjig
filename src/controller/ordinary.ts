@@ -1,3 +1,4 @@
+import { defaultRoleBounds } from '../workflow/execution-bounds.js';
 import { originalFailedWaitOutcome } from './original-wait-outcome.js';
 import { prepareGovernedResult } from './governed-result.js';
 import { matchesEffectAssignmentProfile } from './effect-assignment-provenance.js';
@@ -774,20 +775,21 @@ export class Ordinary {
                         }), true);
                     });
                 }) };
+            const maxProviderRequests = this.h.options.maxProviderRequests ?? defaultRoleBounds.maxProviderRequests;
             let requests = 0;
             pi = await createPiSession({ host, operations, requestLanguagePolicy: () => conversationLanguagePolicy(this.h.store, a.identity.conversationId, !!JSON.parse(a.work.data).assignmentId, !!goal?.strict), ...(controls ? { coordination: controls } : {}), ...(goal ? { goal: goal.controls, readOnly: goal.strict } : {}), model: options.model, maxReadBytes: 1024 * 1024, systemPrompt: 'Configured integration grants (not proof of procedure or current authority): ' + JSON.stringify(goal?.strict ? { reviewOnly: true } : this.h.effectContext(a.work.id)) + '. Current host-bound scope: ' + JSON.stringify({ projectId: a.work.project, workId: a.work.id, scopeTransition: JSON.parse(a.work.data).scopeTransition ?? null }) + ' Older history may describe prior scopes; only current owned operations address current project. ' + ' This is an ordinary conversation and read-only investigation. Answer the retained owner input naturally; preserve uncertainty and earlier obligations. Project writes, governed implementation, review-ready standing, publication and merge require the separate governed workflow. Project-unbound conversations cannot execute or access project/host files.' + (goal ? '\n' + goal.systemPrompt : ''), beforeModelRequest: async (manager) => {
                     this.h.entry(a.runId);
                     this.h.goals.assertCurrent(a.identity);
                     if (handle.abort.signal.aborted)
                         throw new Error('Conversation request cancelled');
-                    if (++requests > 16) {
+                    if (++requests > maxProviderRequests) {
                         if (!requestLimit) {
-                            this.h.observe(a.runId, { kind: 'ordinary-request-limit', limit: 16, inputId: input.id, sourceId: input.source,
+                            this.h.observe(a.runId, { kind: 'ordinary-request-limit', limit: maxProviderRequests, inputId: input.id, sourceId: input.source,
                                 generation: a.identity.generation, directionRevision: this.h.interactions.inspect(a.identity.conversationId).directionRevision,
                                 nativeSessionId: manager.getSessionId() });
-                            requestLimit = { limit: 16 };
+                            requestLimit = { limit: maxProviderRequests };
                         }
-                        throw new Error('Conversation response reached its16-request limit; the original request and work are retained.');
+                        throw new Error(`Conversation response reached its ${maxProviderRequests}-request limit; the original request and work are retained.`);
                     }
                     const file = manager.getSessionFile()!;
                     let cp;

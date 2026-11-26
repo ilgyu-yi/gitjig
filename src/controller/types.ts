@@ -29,6 +29,8 @@ export interface ControllerOptions {
         maxAssignments?: number;
     };
     capacityLimit?: number;
+    /** Optional lower provider request ceiling per ordinary response and governed role. */
+    maxProviderRequests?: number;
     completedResources?: import('./completed-resources.js').CompletedResourcePolicy;
     /** Original host route captured before application HOME projection. */
     sourceGitRoute?: import('../effects/source-policy.js').SourceGitRoute;

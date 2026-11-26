@@ -2,7 +2,7 @@
 import test from 'node:test';import assert from 'node:assert/strict';import{randomUUID}from'node:crypto';
 import{structuredAssignmentWorld}from'./structured-assignment-fixture.mjs';import{scripted}from'./effect-fixture.mjs';
 const snapshot=c=>JSON.stringify(Object.fromEntries(['works','sources','runs','budgets','conversation_inputs','conversation_assignments','conversation_dependencies','observations','effect_operations'].map(table=>[table,c.store.all('SELECT * FROM '+table+' ORDER BY rowid')])));
-async function fixture(t){const f=await structuredAssignmentWorld(t);f.onGoverned(()=>{throw Error('CONTROLLED_STOP_BEFORE_GOVERNED_MODELS');});await f.assign();f.c.store.run('UPDATE budgets SET consumed=lim WHERE lineage=? AND kind=?',f.child.workId,'execution');return f;}
+async function fixture(t){const f=await structuredAssignmentWorld(t,{maxProviderRequests:16});f.onGoverned(()=>{throw Error('CONTROLLED_STOP_BEFORE_GOVERNED_MODELS');});await f.assign();f.c.store.run('UPDATE budgets SET consumed=lim WHERE lineage=? AND kind=?',f.child.workId,'execution');return f;}
 async function capped(f,cid=f.parent){
  const c=f.c,request={conversationId:f.child.conversationId,observedDirectionRevision:c.inspectConversation(f.child.conversationId).directionRevision,projectId:'P',operation:'change',instructions:'Inspect and continue the same original task after allowance recovery.'};
  await c.queueConversationInput({conversationId:cid,expectedGeneration:c.inspectConversation(cid).generation,text:'Continue the original assigned task without replacing it.',mode:'idle'});let requests=0;

@@ -4,7 +4,7 @@ import { assessedLineCount } from './source-scope.js';
 import { NativeRoleCollector, readNativeRoleOutput, nativeRoleIntentReceipt } from './native-role-output.js';
 import { assertNoSubmissionIssues } from './native-submission-source.js';
 import type { StructuredOutputIntent } from '../pi/structured-output.js';
-import { defaultNativeRoleTurns, defaultRoleBounds } from './execution-bounds.js';
+import { defaultRoleBounds, maxNativeRoleTurns, nativeRoleTurnLimit, validProviderRequestLimit } from './execution-bounds.js';
 import { roleFraming, nativeRoleFraming } from './role-framing.js';
 import { sourceFitAuthorityIssue, sourceFitRequirementDomain } from './role-input.js';
 import path from 'node:path';
@@ -55,7 +55,7 @@ export async function runRole(options: RunRoleOptions): Promise<RoleExecution> {
     const deadline = new AbortController();
     const signal = o.signal ? AbortSignal.any([o.signal, deadline.signal]) : deadline.signal;
     let timer: NodeJS.Timeout | undefined;
-    const maxProviderRequests = o.maxProviderRequests ?? defaultRoleBounds.maxProviderRequests, timeoutMs = o.timeoutMs ?? defaultRoleBounds.timeoutMs, maxNativeTurns = o.maxNativeTurns ?? defaultNativeRoleTurns;
+    const maxProviderRequests = o.maxProviderRequests ?? defaultRoleBounds.maxProviderRequests, timeoutMs = o.timeoutMs ?? defaultRoleBounds.timeoutMs, maxNativeTurns = o.maxNativeTurns ?? nativeRoleTurnLimit(maxProviderRequests);
     const nativeStructured = Boolean(o.model.bridge || o.model.bridgeProfile);
     const abort = () => { void pi?.session.abort(); };
     const entry = () => {
@@ -89,9 +89,9 @@ export async function runRole(options: RunRoleOptions): Promise<RoleExecution> {
         o.inputBundle = structuredClone(o.inputBundle);
         entry();
         if (o.nativeCarrier && !nativeStructured) throw Error('NATIVE_SUBMISSION_PROVIDER_UNSUPPORTED: an explicit submission carrier requires the owned Claude bridge');
-        if (!Number.isSafeInteger(maxProviderRequests) || maxProviderRequests < 1 || maxProviderRequests > 100)
-            throw new Error('Provider request cap must be1..100');
-        if (!Number.isSafeInteger(maxNativeTurns) || maxNativeTurns < 1 || maxNativeTurns > 100 || o.maxNativeTurns !== undefined && !nativeStructured)
+        if (!validProviderRequestLimit(maxProviderRequests))
+            throw new Error(`Provider request cap must be an integer from 1 to ${defaultRoleBounds.maxProviderRequests}`);
+        if (!Number.isSafeInteger(maxNativeTurns) || maxNativeTurns < 1 || maxNativeTurns > maxNativeRoleTurns || o.maxNativeTurns !== undefined && !nativeStructured)
             throw new Error('Native turn bound1..100 requires an owned Claude role');
         if (timeoutMs !== null) {
             if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 600000)

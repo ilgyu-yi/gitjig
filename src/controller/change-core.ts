@@ -62,7 +62,7 @@ import { ControllerError, ManagedReviewChanged, type ControllerOptions } from '.
 import { sharePreviousCriteriaText } from '../workflow/criteria-text.js';
 import type { Store } from './store.js';
 import { providerUsageLimit } from '../workflow/provider-failure.js';
-import { defaultNativeRoleTurns, defaultRoleBounds, roleRequestLimit } from '../workflow/execution-bounds.js';
+import { defaultRoleBounds, nativeRoleTurnLimit, roleRequestLimit } from '../workflow/execution-bounds.js';
 import type { BeginChangeOptions, ChangeOperation, CheckChangeOperation, ChangeView, DriveChangeOptions, ChangeResultOptions, ChangeResultView, VerificationEvidenceView, PlanningFailureView, AssignmentAllowanceHold, AssignmentOwnerAction, WorkflowCriteriaHold } from './change-types.js';
 import type { Role, RoleResult, RoleExecution, InputBundle, PlanProposal, ImplementationCarry, VerificationStrategy, PlanningVerificationProfile, SourceFitReferences, CheckSpec, CheckAmendmentProposal } from '../workflow/types.js';
 class SourceScopeChangeRequiresPlanning extends Error {
@@ -263,6 +263,9 @@ class ConsumerControlMismatch extends Error {
 export class ChangeCore {
     private executionAdmissionHolds = new WeakSet<ChangeView>();
     private readonly readResultChanges = createResultChangesReader();
+    private roleBounds() {
+        return { ...defaultRoleBounds, maxProviderRequests: this.h.options.maxProviderRequests ?? defaultRoleBounds.maxProviderRequests };
+    }
     constructor(private h: ChangeHost) {
     }
     hasActiveOperation(work: string): boolean { return this.operations.has(work); }
@@ -2875,12 +2878,13 @@ export class ChangeCore {
                 const entry = catalog.find(item=>item.id===selected.modelId);
                 capabilities = entry ? {contextWindow:entry.contextWindow,maxTokens:entry.maxTokens} : null;
             }
+            const bounds = this.roleBounds();
             const estimate = () => {
                 assertCarryCurrent();
                 assertFindingCurrent();
                 const native = model?.bridge || model?.bridgeProfile
-                    ? nativeRoleFraming(role,bundle,'preallocation-estimate',defaultNativeRoleTurns,undefined,defaultRoleBounds.maxProviderRequests) : undefined;
-                const framing = native ?? roleFraming(role,bundle,false,defaultRoleBounds);
+                    ? nativeRoleFraming(role,bundle,'preallocation-estimate',nativeRoleTurnLimit(bounds.maxProviderRequests),undefined,bounds.maxProviderRequests) : undefined;
+                const framing = native ?? roleFraming(role,bundle,false,bounds);
                 if (native) assertNativeResponseSchema(native.intent);
                 // This is a lower bound; native system/tool projection is checked
                 // again at the actual SDK stream boundary, never guessed here.
@@ -3566,7 +3570,7 @@ export class ChangeCore {
         this.assertReviewEvidence(options.workId, inputBundle.context.selectedReviewEvidence);
         const verificationInputBinding = inputBundle.context.verificationReviewRequirements !== undefined
             ? this.verificationInputBinding(options.workId, String(context.stage), context.reviewKey, inputBundle.context.verificationReviewRequirements as { requirementId: string; strategyDigest: string; witnessIds: string[] }[]) : undefined;
-        const bounds = defaultRoleBounds;
+        const bounds = this.roleBounds();
         const a = this.reserve(options.workId, role, { ...context, ...(planningDomainHash ? { planningDomainHash, planningRequirementsHash } : {}), ...(subjectActionHash?{subjectActionCaptureHash:subjectActionHash,subjectActionsProfile:inputBundle.context.subjectActionsProfile,subjectActionsView:inputBundle.context.subjectActionsView,occurrences:inputBundle.context.occurrences}:{}), ...(findingBodyHash?{findingBodyHash}:{}), ...(latestDispositionHash?{latestDispositionHash,latestDispositionView:inputBundle.context.latestDispositionView??null}:{}), ...(metadataIdentityHash?{metadataIdentityHash}:{}), ...(workflowCriteriaHash?{workflowCriteriaHash,workflowCriteria:inputBundle.context.workflowCriteria}:{}), inputEvidenceManifests, ...(historicalInputHash ? { historicalInputHash } : {}), ...(decisionReferences ? { decisionReferences } : {}), ...(inputBundle.context.dispositionHistory ? { dispositionHistory: inputBundle.context.dispositionHistory } : {}), ...(inputBundle.context.planningVerificationProfile ? { planningVerificationProfile: inputBundle.context.planningVerificationProfile } : {}), ...(verificationInputBinding ? { verificationInputBinding } : {}), ...(compositeInputHash?{compositeInputHash}:{}), modelMode: selection.mode, modelIdentity: hash(modelConfigurationIdentity(model)), bounds }, staging), handle = this.operations.get(options.workId)!.handle;
         if (context.stage === 'raw-assessment') this.operations.get(options.workId)!.rawAssessmentActor = a.launchId;
         const assertCapturedInput = () => {
@@ -3875,10 +3879,10 @@ export class ChangeCore {
         selection.assertCurrent();
         assertOwnedCurrent();
         const model = selection.model;
-        const bundle = structuredClone(options.inputBundle), runId = randomUUID(), launchId = randomUUID(), bounds = defaultRoleBounds;
+        const bundle = structuredClone(options.inputBundle), runId = randomUUID(), launchId = randomUUID(), bounds = this.roleBounds();
         const staging = path.join(this.h.options.installationHome, 'control', 'publication', launchId), handle: Handle = { abort: new AbortController() };
         const role = 'adjudicator' as const;
-        if (model?.bridge || model?.bridgeProfile) assertNativeResponseSchema(nativeRoleFraming(role,bundle,launchId,defaultNativeRoleTurns,undefined,bounds.maxProviderRequests).intent);
+        if (model?.bridge || model?.bridgeProfile) assertNativeResponseSchema(nativeRoleFraming(role,bundle,launchId,nativeRoleTurnLimit(bounds.maxProviderRequests),undefined,bounds.maxProviderRequests).intent);
         let registered = false;
         try {
             this.s.tx(() => {

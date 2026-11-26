@@ -30,7 +30,7 @@ globalThis.__checkOutputRecoveryScope=async options=>{
  active.scopes.push(scope);if(!options.readOnlyWork)active.writable=scope.workspaceRoot;return scope;
 };
 const home=path.join(root,'home'),originalTemp=process.env.TMPDIR;process.env.TMPDIR=path.join(home,'artifacts');
-const c=await openController({installationHome:home,runtimeProfile:{dockerBinary:process.execPath,dockerContext:'controlled',image:'sha256:'+'a'.repeat(64)}});let failures=0;
+const c=await openController({installationHome:home,maxProviderRequests:16,runtimeProfile:{dockerBinary:process.execPath,dockerContext:'controlled',image:'sha256:'+'a'.repeat(64)}});let failures=0;
 after(async()=>{await c.close();delete globalThis.__checkOutputRecoveryScope;if(originalTemp===undefined)delete process.env.TMPDIR;else process.env.TMPDIR=originalTemp;if(!failures)await fs.rm(root,{recursive:true,force:true});});
 async function world(t,mode='literal',unavailableStderr,allowance={executionLimit:24,resolutionLimit:12}){
  const base=path.join(root,randomUUID()),source=path.join(base,'source');await fs.mkdir(source,{recursive:true});await fs.writeFile(path.join(source,'consumer.cjs'),'module.exports=2;\n');await fs.writeFile(path.join(source,'check.cjs'),'// controlled bad literal digest\n');
@@ -808,7 +808,7 @@ test('crashed report recovery delivers literal keyed review and completes curren
  assert.deepEqual(c.store.one('SELECT * FROM check_runs WHERE id=?',f.receipt.id),f.receipt);
  const launch=c.store.one("SELECT * FROM role_launches WHERE work=? AND role='adjudicator' ORDER BY rowid DESC LIMIT 1",f.workId);
  assert.equal(launch.status,'COMPLETE');const output=c.store.one("SELECT id FROM role_outputs WHERE launch=? AND status='usable'",launch.id).id;
- await c.close();const reopened=await openController({installationHome:home,runtimeProfile:{dockerBinary:process.execPath,dockerContext:'controlled',image:'sha256:'+'a'.repeat(64)}});t.after(()=>reopened.close());
+ await c.close();const reopened=await openController({installationHome:home,maxProviderRequests:16,runtimeProfile:{dockerBinary:process.execPath,dockerContext:'controlled',image:'sha256:'+'a'.repeat(64)}});t.after(()=>reopened.close());
  for(const receipt of cappedWorkReceipts){assert.deepEqual(reopened.inspectChangeResult(receipt.workId).roleRequestLimit,receipt.expected,'Typed own failure survives cold reopening without reclassification from prose');assert.deepEqual(reopened.inspectChangeActivity(receipt.workId).recordedRoleRequestLimit,receipt.expected);}
  const proof=await reopened.changeCore.historicalPlanningProducer(f.workId,output);
  assert.ok(proof,'Fresh Controller reads the original actual controlled SDK source under its literal capture');

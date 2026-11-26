@@ -1,3 +1,4 @@
+import { configuredProviderRequestLimit } from '../workflow/execution-bounds.js';
 import { inspectCoordinationNoticePresentation, inspectRecordedDelegatedResults } from './conversation-results.js';
 import { isDeepStrictEqual } from 'node:util';
 import type { ConversationView } from './interaction-types.js';
@@ -4068,6 +4069,7 @@ export async function openController(options: ControllerOptions, opening: import
         opening.managementOnly !== undefined && typeof opening.managementOnly !== 'boolean' ||
         opening.prepareStartup !== undefined && typeof opening.prepareStartup !== 'function')
         throw Error('Invalid trusted controller opening');
+    const maxProviderRequests = configuredProviderRequestLimit(options.maxProviderRequests);
     const sourceGitRoute = !Object.hasOwn(options, 'sourceGitRoute') ? captureSourceGitRoute(process.env) : retainSourceGitRoute(options.sourceGitRoute!);
     const completedResources = resourcePolicy(options.completedResources);
     const home = path.resolve(options.installationHome);
@@ -4119,7 +4121,7 @@ export async function openController(options: ControllerOptions, opening: import
         if (prepared !== undefined && (!prepared || typeof prepared !== 'object' || Array.isArray(prepared) || Object.keys(prepared).some(key => key !== 'runtimeProfile')))
             throw Error('Startup preparation accepts only runtimeProfile');
         const selectedRuntime = options.runtimeProfile ?? prepared?.runtimeProfile;
-        const effective: ControllerOptions = { ...options, installationHome: home, completedResources, sourceGitRoute };
+        const effective: ControllerOptions = { ...options, installationHome: home, completedResources, sourceGitRoute, maxProviderRequests };
         if (options.interactionDelegation) {
             const value = options.interactionDelegation, n = value.maxAssignments ?? 8;
             if (!Number.isSafeInteger(n) || n < 1 || n > 100 || value.projectIds?.some(project => !project || !/^[A-Za-z0-9_-]{1,100}$/.test(project)) || value.projectIds && new Set(value.projectIds).size !== value.projectIds.length)

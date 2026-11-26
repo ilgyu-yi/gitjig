@@ -2402,6 +2402,9 @@ check('fresh planning pending intake does not bypass Controller post-harvest rec
 });
 for(const carrier of ['current-default','formatter/v1','historical-profile7'])check('planning source restore retains exact current or historical carriers after cold reopen: '+carrier,async t=>{
  assert.equal(globalThis.__nativeFramingCalls,undefined);globalThis.__nativeFramingCalls=[];t.after(()=>{delete globalThis.__nativeFramingCalls;});
+ const savedRequestLimit=process.env.GITJIG_MAX_PROVIDER_REQUESTS;
+ delete process.env.GITJIG_MAX_PROVIDER_REQUESTS;
+ t.after(()=>{if(savedRequestLimit!==undefined)process.env.GITJIG_MAX_PROVIDER_REQUESTS=savedRequestLimit;});
  const f=await driveDecisionCarryProposal(t,{carrier});assertDecisionCarryPlan(f);
  assert.deepEqual(f.observedCarriers,['planner','challenger','adjudicator'].map(role=>({role,version:carrier==='current-default'?3:carrier==='historical-profile7'&&role==='challenger'?2:1})));
  const plan=f.core.version(f.result.planVersion),ids=[plan.data.authorLaunch,plan.data.challengeLaunch,plan.data.decisionLaunch];
@@ -2411,8 +2414,8 @@ for(const carrier of ['current-default','formatter/v1','historical-profile7'])ch
   assert.ok(frames.some(frame=>frame.id===id));
   assert.ok(frames.every(frame=>frame.version===(carrier==='current-default'?3:carrier==='historical-profile7'&&role==='challenger'?2:1)),'Preallocation and dispatch must select the same original carrier');
   for(const frame of frames){
-   assert.match(frame.systemPrompt,/The model request limit for this role is 16/);
-   assert.match(frame.systemPrompt,/The Native query turn limit is 16/);
+   assert.match(frame.systemPrompt,/The model request limit for this role is 1000\./);
+   assert.match(frame.systemPrompt,/The Native query turn limit is 100\./);
   }
  }
  const selected=ids.map(id=>{
