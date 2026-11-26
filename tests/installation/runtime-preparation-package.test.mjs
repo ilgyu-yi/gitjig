@@ -35,6 +35,7 @@ test('packed runtime helper and original prepared editor resolve entirely inside
     await fs.mkdir(config,{mode:0o700});
     await fs.writeFile(binary,'#!'+process.execPath+'\n'+`import fs from 'node:fs';const args=process.argv.slice(2);${await dockerContextInspection(config)}if(args.includes('version')){console.log(JSON.stringify('owned-engine'));process.exit(0);}if(args.includes('image')&&args.includes('inspect')){console.log(JSON.stringify(args.at(-1)));process.exit(0);}const context=args.at(-1);fs.writeFileSync(${JSON.stringify(receipt)},JSON.stringify({args,files:fs.readdirSync(context)}));fs.writeFileSync(args[args.indexOf('--iidfile')+1],${JSON.stringify(image)});`,{mode:0o700});
     const c=await openController({installationHome:home});
+    const savedPath=path.join(home,'config/startup.json');
     try {
         const startup=ApplicationStartup.open(c),edit=await startup.prepareRuntimeEdit();
         const built=await edit.buildImage({dockerBinary:binary,dockerConfigDirectory:config,dockerContext:'owned'},()=>{},new AbortController().signal,()=>{});
@@ -46,5 +47,24 @@ test('packed runtime helper and original prepared editor resolve entirely inside
         assert.deepEqual(call.args.slice(0,5),['--config',config,'--context','owned','build']);await assert.rejects(fs.access(call.args.at(-1)));
         for(const table of ['works','runs','conversation_inputs'])assert.equal(c.store.one('SELECT COUNT(*) AS n FROM '+table).n,0);
     } finally {await c.close();}
+    const [saved,buildReceipt]=await Promise.all([fs.readFile(savedPath),fs.readFile(receipt)]);
+    const scenario=path.join(root,'repeat.json'),output=path.join(root,'repeat-terminal');
+    const steps=[
+        {wait:'Choose [4]:',send:'2\r'},
+        {wait:'Choose [4]:',send:'1\r'},
+        {wait:'Choose [3]:',send:'4\r'},
+        {wait:'Choose [3]:',send:'\r'},
+        {wait:'Choose [4]:',send:'\r'},
+        {wait:'Check this connection and image without building or saving?',send:'\r'},
+        {wait:'Choose [4]:',send:'\r'},
+        {wait:'Check this connection and image without building or saving?',send:'y\r'},
+        {wait:'Keeping the current execution image',send:''},
+    ];
+    await fs.writeFile(scenario,JSON.stringify({command:[process.execPath,helper,'--home',home],env,steps,output,timeoutSeconds:10}));
+    const terminal=JSON.parse((await execute('/usr/bin/python3',['tests/cli/fork-ui-pty.py',scenario],{timeout:13000})).stdout);
+    assert.deepEqual([terminal.exitCode,terminal.stages,terminal.terminalRestored],[0,steps.length,true]);
+    assert.match(await fs.readFile(output,'utf8'),/Engine owned-engine · image/);
+    assert.deepEqual(await fs.readFile(savedPath),saved);
+    assert.deepEqual(await fs.readFile(receipt),buildReceipt);
     passed=true;
 });

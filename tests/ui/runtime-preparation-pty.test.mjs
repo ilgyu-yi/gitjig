@@ -112,6 +112,8 @@ async function launch(f,label,steps,{standalone=false,standaloneEntry,expectedEx
     return fs.readFile(file+'.terminal','utf8');
 }
 const open=[{wait:'Model: not selected',send:'/setup runtime\x1b\r'}];
+const otherRuntimeRoutes={wait:'Review and check the selected image',send:'Other runtime preparation routes\r'};
+const standaloneOtherRoutes={wait:'Choose [4]:',send:'1\r'};
 const startBuild=[{wait:'Runtime setup · staged',send:'Prepare an execution image\r'},{wait:'Continue to confirmation',send:'\r'},{wait:'Build execution image?',send:'Build execution image\r'}];
 const save=[{wait:'Runtime setup · staged',send:'Review and save runtime\r'},{wait:'Review runtime setup before applying',send:'\r'},{wait:'Explicit runtime setup action',send:'Save and apply runtime\r'},{wait:'Runtime saved and applied',send:'/quit\x1b\r'}];
 const dockerPhase = ({args}) => args[2] === 'context' ? args[3] : args[4];
@@ -224,6 +226,7 @@ for(const engineFailure of ['exit','signal']) test('interactive installer retrie
     const retry = uiText('en', 'runtime.install.retryBuildConnection');
     const output=await launch(f, 'retry-server', [
         ...open, {wait:'Runtime setup · staged',send:'Interactive runtime installer\r'},
+        otherRuntimeRoutes,
         {wait:'Existing Docker backend',send:'\x151\r'},
         {wait:'Docker executable',send:'\r'}, {wait:'Docker configuration directory',send:'\r'},
         {wait:'Docker context',send:'\r'}, {wait:'Create this Docker configuration directory',send:'\x15n\r'},
@@ -246,6 +249,7 @@ test('Escape from an installer failure returns to the runtime form without openi
     const f=await fixture(t,{engineFailure:'exit'});
     const output=await launch(f,'dismiss-installer-failure',[
         ...open, {wait:'Runtime setup · staged',send:'Interactive runtime installer\r'},
+        otherRuntimeRoutes,
         {wait:'Existing Docker backend',send:'\x151\r'},
         {wait:'Docker executable',send:'\r'}, {wait:'Docker configuration directory',send:'\r'},
         {wait:'Docker context',send:'\r'}, {wait:'Create this Docker configuration directory',send:'\x15n\r'},
@@ -271,6 +275,7 @@ for(const surface of ['editor','installer','check'])test('missing selected conte
         ...open,
         ...installer?[
             {wait:'Runtime setup · staged',send:'Interactive runtime installer\r'},
+            otherRuntimeRoutes,
             {wait:'Existing Docker backend',send:'\x151\r'},
             {wait:'Docker executable',send:'\r'}, {wait:'Docker configuration directory',send:'\r'},
             {wait:'Docker context',send:'\r'}, {wait:'Create this Docker configuration directory',send:'\x15n\r'},
@@ -320,6 +325,7 @@ test('Escape from Colima failure does not reopen the route picker or restart pre
     const f=await fixture(t,{failFirstColima:true});
     const output=await launch(f,'dismiss-colima-failure',[
         ...open,{wait:'Runtime setup · staged',send:'Interactive runtime installer\r'},
+        otherRuntimeRoutes,
         {wait:'Existing Docker backend',send:'\x152\r'},
         {wait:'Install/repair Colima',send:'\x15n\r'},
         {wait:'Colima profile',send:'\x15build\r'},
@@ -352,6 +358,7 @@ test('in-app interactive installer performs owned package/Colima/image steps and
     const f=await fixture(t);
     const output=await launch(f,'wizard',[
         ...open,{wait:'Runtime setup · staged',send:'Interactive runtime installer\r'},
+        otherRuntimeRoutes,
         {wait:'Existing Docker backend',send:'\x152\r'},
         {wait:'Install/repair Colima',send:'\x15y\r'},
         {wait:'Colima profile',send:'\x15build\r'},
@@ -376,6 +383,7 @@ for(const standalone of [false,true])test((standalone?'standalone':'in-app')+' w
     await fs.symlink(f.client,alias);
     const steps=[
         ...(standalone?[]:[...open,{wait:'Runtime setup · staged',send:'Interactive runtime installer\r'}]),
+        standalone?{wait:'Choose [4]:',send:'1\r'}:otherRuntimeRoutes,
         {wait:standalone?'Choose [':'Existing Docker backend',send:standalone?'1\r':'\x151\r'},
         {wait:'Docker executable',send:(standalone?'':'\x15')+alias+'\r'},
         {wait:'Docker configuration directory',send:'\r'},
@@ -408,6 +416,7 @@ for(const locale of ['en','ko'])test(locale+' Colima download failure resumes th
     const output=await launch(f,'colima-download-retry',[
         {wait:text('model.unselected'),send:'/setup runtime\x1b\r'},
         {wait:text('runtime.title'),send:text('runtime.install')+'\r'},
+        {wait:wizard('checkSavedFirst'),send:wizard('otherRoutes')+'\r'},
         {wait:wizard('chooseRoute').split('\n')[0],send:'\x152\r'},
         {wait:wizard('installPackages'),send:'\x15'+approve+'\r'},
         {wait:wizard('colimaProfile'),send:'\x15build\r'},
@@ -437,7 +446,7 @@ for(const locale of ['en','ko'])test(locale+' Colima download failure resumes th
 
 for(const close of [false,true])test('standalone interactive helper '+(close?'handles SIGTERM without a detached build':'uses original captured startup Save') ,{timeout:20000},async t=>{
     const f=await fixture(t);
-    const steps=[{wait:'Choose [',send:'1\r'},{wait:'Docker executable [',send:'\r'},{wait:'Docker configuration directory [',send:'\r'},
+    const steps=[standaloneOtherRoutes,{wait:'Choose [3]:',send:'1\r'},{wait:'Docker executable [',send:'\r'},{wait:'Docker configuration directory [',send:'\r'},
         {wait:'Docker context [',send:'\r'},{wait:'Create this Docker configuration directory',send:'n\r'},
         {wait:'Build the installed execution image now?',send:'y\r'},
         {wait:'OWNED_BUILD_OUTPUT',...close?{terminate:true,send:''}:{send:''}},
@@ -452,7 +461,7 @@ for(const close of [false,true])test('standalone interactive helper '+(close?'ha
 test('standalone refuses a competing startup write after the held build without overwriting it',{timeout:20000},async t=>{
     const f=await fixture(t);
     const output=await launch(f,'standalone-drift',[
-        {wait:'Choose [',send:'1\r'},{wait:'Docker executable [',send:'\r'},{wait:'Docker configuration directory [',send:'\r'},
+        standaloneOtherRoutes,{wait:'Choose [3]:',send:'1\r'},{wait:'Docker executable [',send:'\r'},{wait:'Docker configuration directory [',send:'\r'},
         {wait:'Docker context [',send:'\r'},{wait:'Create this Docker configuration directory',send:'n\r'},
         {wait:'Build the installed execution image now?',send:'y\r'},
         {wait:'OWNED_BUILD_OUTPUT',releaseFile:f.drift,send:''},{wait:'1s elapsed',releaseFile:f.release,send:''},
@@ -481,7 +490,7 @@ test('standalone runtime installer follows the terminal locale through a symlink
     f.env.LANG='ko_KR.UTF-8';
     const output=await launch(f,'standalone-korean',[{wait:'번호 선택 [',send:'3\r'}],{standalone:true,standaloneEntry:alias});
     assert.ok(output.includes(uiText('ko','runtime.install.standaloneControls')));
-    assert.ok(output.includes('기존 Docker 백엔드 사용'));
+    assert.ok(output.includes('권장 · 지정된 실행 이미지 검토 및 확인'));
     await assert.rejects(fs.access(f.calls));
     assert.equal(await fs.readFile(path.join(f.home,'config/startup.json'),'utf8'),f.saved);
     f.pass();
@@ -490,7 +499,7 @@ test('standalone runtime installer follows the terminal locale through a symlink
 test('standalone preserves unknown native cleanup as exit2 with its original group',{timeout:15000},async t=>{
     const f=await fixture(t,{denyCleanup:true});
     const output=await launch(f,'standalone-unknown',[
-        {wait:'Choose [',send:'1\r'},{wait:'Docker executable [',send:'\r'},{wait:'Docker configuration directory [',send:'\r'},
+        standaloneOtherRoutes,{wait:'Choose [3]:',send:'1\r'},{wait:'Docker executable [',send:'\r'},{wait:'Docker configuration directory [',send:'\r'},
         {wait:'Docker context [',send:'\r'},{wait:'Create this Docker configuration directory',send:'n\r'},
         {wait:'Build the installed execution image now?',send:'y\r'},{wait:'OWNED_BUILD_OUTPUT',terminate:true,send:''},
     ],{standalone:true,expectedExit:2});
@@ -550,6 +559,26 @@ test('actual terminal checks selected engine/image and keeps saved runtime and o
     const calls=(await fs.readFile(f.calls,'utf8')).trim().split('\n').map(JSON.parse);
     assert.deepEqual(calls.map(dockerPhase),['inspect','version','inspect','image','inspect']);
     assert.deepEqual([calls[1],calls[3]].map(c=>c.args.slice(4,6)),[['version','--format'],['image','inspect']]);await assert.rejects(fs.access(f.held));f.pass();
+});
+
+for(const locale of ['en','ko'])test('interactive installer reports the successful saved-image check without saving in '+locale,{timeout:20000},async t=>{
+    const f=await fixture(t,{locale});
+    const text=id=>uiText(locale,id);
+    const wizard=id=>text('runtime.install.'+id);
+    const preserve={assertDraft:'/setup runtime',queries:f.empty};
+    await launch(f,'wizard-keep-image',[
+        {wait:text('model.unselected'),send:'/setup runtime\x1b\r'},
+        {wait:text('runtime.title'),send:text('runtime.install')+'\r'},
+        {wait:wizard('checkSavedFirst'),send:'\r'},
+        {wait:wizard('checkExisting'),...preserve,send:'\x15'+(locale==='ko'?'예':'y')+'\r'},
+        {wait:text('runtime.checkFound'),...preserve,send:text('runtime.cancel')+'\r'},
+        {wait:text('footer.setup'),...preserve,send:'\x15/quit\x1b\r'},
+    ]);
+    const calls=(await fs.readFile(f.calls,'utf8')).trim().split('\n').map(JSON.parse);
+    assert.deepEqual(calls.map(dockerPhase),['inspect','version','inspect','image','inspect']);
+    assert.equal(calls.find(call=>dockerPhase(call)==='image').args.at(-1),oldImage);
+    assert.equal(await fs.readFile(path.join(f.home,'config/startup.json'),'utf8'),f.saved);
+    f.pass();
 });
 
 for(const action of ['Prepare an execution image','Check runtime connection and image'])test('actual terminal '+action+' failure opens selected repair immediately',{timeout:20000},async t=>{
@@ -636,6 +665,7 @@ for (const locale of ['en','ko']) test('runtime check failure stays visible thro
 test('actual terminal missing Homebrew explains the blocker and switches directly to existing Docker',{timeout:20000},async t=>{
  const f=await fixture(t);await fs.unlink(path.join(f.root,'tools/bin/brew'));const output=await launch(f,'missing-brew-switch',[
   ...open,{wait:'Runtime setup · staged',send:'Interactive runtime installer\r'},
+  otherRuntimeRoutes,
   {wait:'Existing Docker backend',send:'\x152\r'},
   {wait:'Install/repair Colima',send:'\x15y\r'},
   {wait:'Open recovery actions',queries:f.empty,send:'\r'},
@@ -659,6 +689,7 @@ for(const locale of ['en','ko'])test(locale+' interactive installer shows the fa
  const output=await launch(f,'installer-correct-route',[
   {wait:text('model.unselected'),send:'/setup runtime\x1b\r'},
   {wait:text('runtime.title'),send:text('runtime.install')+'\r'},
+  {wait:wizard('checkSavedFirst'),send:wizard('otherRoutes')+'\r'},
   {wait:wizard('chooseRoute').split('\n')[0],send:'\x151\r'},
   {wait:wizard('executable'),send:'\r'},{wait:wizard('configDirectory'),send:'\r'},
   {wait:wizard('context'),send:'\r'},{wait:wizard('createConfig'),send:'\x15'+no+'\r'},
@@ -848,6 +879,7 @@ test('terminal refuses preparation against an inherited default endpoint before 
     assert.doesNotMatch(output, /POISONED_AMBIENT|Build execution image\?|Check selected runtime\?|Discover with this route/);
 
     const standalone = await launch(f, 'default-context-standalone', [
+        standaloneOtherRoutes,
         {wait:'Existing Docker backend', send:'1\r'},
         {wait:'Docker executable', send:'\r'},
         {wait:'Docker configuration directory', send:'\r'},
