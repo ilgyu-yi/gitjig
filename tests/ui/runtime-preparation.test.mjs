@@ -527,6 +527,73 @@ if(args[4]!=='build')throw Error('Only version and build allowed');const count=f
     assert.equal(result.image,image);assert.equal(await fs.readFile(attempts,'utf8'),'2');assert.equal(answers.length,0);assert.match(output,/package\/VM steps will not repeat/);
 });
 
+test('runtime preparation can verify the exact existing image without another build or settings write', async t => {
+    const f = await world(t);
+    const binary = await script(path.join(f.root, 'metadata-client'), `import fs from 'node:fs'; const args = process.argv.slice(2);
+${await dockerContextInspection(f.config)}
+fs.appendFileSync(${JSON.stringify(f.receipt)},JSON.stringify(args.slice(4))+'\\n');
+if (args[4] === 'version') console.log(JSON.stringify('owned-engine'));
+else if (args[4] === 'image' && args[5] === 'inspect') console.log(JSON.stringify(args.at(-1)));
+else throw Error('Only the original metadata check may run');`);
+    const initialRuntime = { dockerBinary: binary, dockerConfigDirectory: f.config, dockerContext: 'owned', image };
+    const answers = ['4', 'y'];
+    let output = '';
+    const result = await interactiveSetup({
+        initialRuntime, ownerHome: f.root,
+        ask: async () => { assert.ok(answers.length, 'Unexpected prompt'); return answers.shift(); },
+        output: value => { output += value; },
+        saveRuntime: () => assert.fail('Existing settings need no write'),
+    });
+    assert.deepEqual(result, initialRuntime);
+    assert.match(output, /Keeping.*execution image/);
+    assert.equal(answers.length, 0);
+    const calls = (await fs.readFile(f.receipt, 'utf8')).trim().split('\n').map(JSON.parse);
+    assert.deepEqual(calls.map(args => args[0]), ['version', 'image']);
+    assert.equal(calls[1].at(-1), image);
+});
+
+test('runtime preparation accepts only the actions shown on each saved-image menu', async t => {
+    const f = await world(t);
+    const answers = ['2', '1', '4', '3', '3'];
+    const prompts = [];
+    let output = '';
+    const result = await interactiveSetup({
+        initialRuntime: {image}, ownerHome: f.root,
+        ask: async question => { prompts.push(question); return answers.shift(); },
+        output: text => { output += text; },
+        execute: () => assert.fail('No native command is authorized'),
+        saveRuntime: () => assert.fail('No settings write is authorized'),
+    });
+    assert.equal(result, undefined);
+    assert.equal(answers.length, 0);
+    assert.deepEqual(prompts.map(prompt => prompt.includes('Review and check the selected image')), [true, true, false, false, true]);
+    assert.match(output, /Choose 4, 1 or 3/);
+    assert.match(output, /Choose 1, 2 or 3/);
+});
+
+test('declining a same-name Colima profile keeps it intact and permits another route', async t => {
+    const f = await world(t);
+    const profile = path.join(f.root, '.colima/gitjig');
+    await fs.mkdir(profile, { recursive: true });
+    const saved = path.join(profile, 'colima.yaml');
+    await fs.writeFile(saved, 'runtime: docker\n', { mode: 0o600 });
+    const bin = path.join(f.root, 'bin');
+    await fs.mkdir(bin);
+    await script(path.join(bin, 'docker'), '');
+    await script(path.join(bin, 'colima'), '');
+    const answers = ['2', 'n', 'gitjig', 'n', '3'];
+    let output = '';
+    assert.equal(await interactiveSetup({
+        ownerHome: f.root, env: { PATH: bin },
+        ask: async () => { assert.ok(answers.length, 'Unexpected prompt'); return answers.shift(); },
+        output: value => { output += value; },
+        execute: () => assert.fail('Declining reuse must not start Docker or Colima'),
+    }), undefined);
+    assert.equal(answers.length, 0);
+    assert.match(output, /gitjig.*left intact/);
+    assert.equal(await fs.readFile(saved, 'utf8'), 'runtime: docker\n');
+});
+
 test('interactive context suggestions belong to the selected trusted configuration directory',async t=>{
     const f=await world(t),selected=path.join(f.root,'selected'),alias=path.join(f.root,'alias');
     await fs.mkdir(selected,{mode:0o700});

@@ -251,6 +251,7 @@ export async function editRuntimeFields(host: Host, edit: RuntimeFieldEdit) {
             let explanation = '';
             try {
                 const helper = await import(new URL('../../runtime/setup.mjs', import.meta.url).href);
+                let verify: (() => Promise<void>) | undefined;
                 const built = await edit.prepareInteractive(staged, guard, {
                     extraPackages,
                     locale,
@@ -273,6 +274,8 @@ export async function editRuntimeFields(host: Host, edit: RuntimeFieldEdit) {
                         return answer;
                     },
                     output: text => { explanation = (explanation + text).slice(-16384); },
+                    checkStarted: () => { lastCheck = undefined; },
+                    checked: check => { verify = check; },
                     execute: (file, args, options) => {
                         const phase = args[0] === 'install' ? 'runtime.installProgress' : args[0] === 'start' ? 'runtime.colimaProgress' :
                             args[4] === 'version' ? 'runtime.checkConnectionProgress' : args[4] === 'build' ? 'runtime.buildProgress' : 'runtime.toolsProgress';
@@ -283,7 +286,9 @@ export async function editRuntimeFields(host: Host, edit: RuntimeFieldEdit) {
                     },
                 });
                 guard();
-                if (built) {
+                if (verify) {
+                    lastCheck = { kind: 'passed', route: { ...staged }, verify };
+                } else if (built) {
                     stage({ dockerBinary: built.dockerBinary, dockerConfigDirectory: built.dockerConfigDirectory ?? '', dockerContext: built.dockerContext, image: built.image });
                     nextAction = 'Review and save runtime';
                 }

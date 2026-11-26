@@ -596,7 +596,7 @@ export async function prepareColima(input, options = {}) {
     return route({dockerBinary, dockerConfigDirectory: config, dockerContext: context}, options);
 }
 
-export async function interactiveSetup({ask, choose, output, signal, guard, checkPath, execute, onProgress, extraPackages = '', stageOnly = false, initialRuntime = {}, saveRuntime, ownerHome = homedir(), env = process.env, home = path.join(ownerHome, '.gitjig'), platform = process.platform, locale = 'en'} = {}) {
+export async function interactiveSetup({ask, choose, output, signal, guard, checkPath, execute, onProgress, checkStarted, onCheckedRoute, extraPackages = '', stageOnly = false, initialRuntime = {}, saveRuntime, ownerHome = homedir(), env = process.env, home = path.join(ownerHome, '.gitjig'), platform = process.platform, locale = 'en'} = {}) {
     initialRuntime = {...initialRuntime};
     const { uiText } = await import('../dist/ui/i18n.js');
     const t = (id, values) => uiText(locale, 'runtime.install.' + id, ...(values ? [values] : []));
@@ -640,9 +640,12 @@ export async function interactiveSetup({ask, choose, output, signal, guard, chec
         reviewedFailure = { error, dismissed: action === undefined };
         return action === 'retry';
     };
-    output(t('intro') + '\n');
     const existingDocker = await findExecutable('docker', options.env.PATH ?? '');
+    const reusableImage = !options.extraPackages && initialRuntime.image &&
+        /^(?:sha256:[a-f0-9]{64}|[^\s]+@sha256:[a-f0-9]{64})$/u.test(initialRuntime.image);
+    if (!reusableImage || !choose) output(t('intro') + '\n');
     let forcedChoice;
+    let showSavedRecommendation = !!reusableImage;
     let routeDraft = {...initialRuntime}, profileDraft = 'gitjig';
     const editDockerRoute = async draft => {
         const dockerBinary = await ask(t('executable'), draft.dockerBinary || await findExecutable('docker', options.env.PATH ?? '') || '');
@@ -658,18 +661,50 @@ export async function interactiveSetup({ask, choose, output, signal, guard, chec
         output(t('route', { context: display(dockerContext), config: display(dockerConfigDirectory), binary: display(dockerBinary) }) + '\n');
     let input;
     while (!input) {
-        const choice = forcedChoice ?? await ask(t('chooseRoute'), existingDocker ? '1' : '2');
-        if (choice === '3') return;
+        const recoveringRoute = forcedChoice !== undefined;
+        const recommendSaved = showSavedRecommendation && !recoveringRoute;
+        const choice = forcedChoice ?? (recommendSaved && choose
+            ? await choose(t('savedRouteTitle'), [
+                { value: '4', label: t('checkSavedFirst') },
+                { value: '1', label: t('otherRoutes') },
+                { value: '3', label: t('cancel') },
+            ])
+            : await ask(t(recommendSaved ? 'chooseSavedRoute' : reusableImage ? 'chooseAlternativeRoute' : 'chooseRoute'),
+                recommendSaved ? '4' : reusableImage ? '3' : existingDocker ? '1' : '2'));
+        check(options);
+        if (choice === undefined) return;
+        if (choice === '3') {
+            if (!reusableImage || recommendSaved) return;
+            showSavedRecommendation = true;
+            continue;
+        }
         forcedChoice = undefined;
+        if (recommendSaved && choice === '1') {
+            showSavedRecommendation = false;
+            continue;
+        }
+        if (!recoveringRoute && (recommendSaved ? choice !== '4' : !['1', '2'].includes(choice))) {
+            output(t(recommendSaved ? 'chooseSavedNumber' : 'chooseOne') + '\n');
+            continue;
+        }
         try {
             if (choice === '2') {
                 let dockerBinary = await findExecutable('docker', options.env.PATH ?? ''), colimaBinary = await findExecutable('colima', options.env.PATH ?? '');
                 const installPackages = !dockerBinary || !colimaBinary || await confirm(t('installPackages'), 'n');
                 const brewBinary = installPackages ? await findExecutable('brew', options.env.PATH ?? '') : undefined;
                 if (installPackages && !brewBinary) throw Error(t('homebrewMissing'));
-                const profile = await ask(t('colimaProfile'), profileDraft); profileDraft = profile;
-                const reuse = await fs.access(path.join(ownerHome, '.colima', profile)).then(() => true, () => false);
-                if (reuse && !await confirm(t('reuseProfile'), 'n')) return;
+                const profile = await ask(t('colimaProfile'), profileDraft);
+                if (profile === undefined) return;
+                if (!/^[a-zA-Z0-9_-]{1,48}$/u.test(profile)) throw Error(t('invalidProfile'));
+                profileDraft = profile;
+                const existing = await fs.lstat(path.join(ownerHome, '.colima', profile)).catch(error => {
+                    if (error.code !== 'ENOENT') throw error;
+                });
+                const reuse = !!existing;
+                if (reuse && !await confirm(t('reuseProfile'), 'n')) {
+                    output(t('profileKept', { profile: display(profile) }) + '\n');
+                    continue;
+                }
                 output('\n' + t('reviewProfile', { profile: display(profile), config: display(path.join(ownerHome, '.docker')) }) + '\n');
                 if (installPackages) output(t('packageEffects') + '\n');
                 output(t('profileEffects') + '\n');
@@ -677,7 +712,28 @@ export async function interactiveSetup({ask, choose, output, signal, guard, chec
                 input = await prepareColima({dockerBinary, colimaBinary, brewBinary, installPackages, profile, reuse}, {...options, platform});
             } else if (choice === '1') {
                 input = await editDockerRoute(routeDraft);
-            } else throw Error(t('chooseOne'));
+            } else if (choice === '4' && reusableImage) {
+                const reviewed = await route(initialRuntime, options);
+                showBuildRoute(reviewed);
+                output(t('existingImage', { image: initialRuntime.image }) + '\n');
+                if (!await confirm(t('checkExisting'), 'n')) continue;
+                const verifyRoute = () => {
+                    guard?.();
+                    let dockerBinary, dockerConfigDirectory;
+                    try {
+                        dockerBinary = realpathSync(initialRuntime.dockerBinary);
+                        dockerConfigDirectory = realpathSync(initialRuntime.dockerConfigDirectory);
+                    } catch { /* Unavailable original paths cannot match the review. */ }
+                    assertReviewedDockerRoute(reviewed, dockerBinary, dockerConfigDirectory);
+                };
+                checkStarted?.();
+                const runtime = await checkRuntime({ ...reviewed, image: initialRuntime.image }, {
+                    ...options, guard: verifyRoute,
+                    onCheckedRoute: onCheckedRoute && (verify => onCheckedRoute(guards => verify({ ...guards, guard: verifyRoute }))),
+                });
+                output(t('keptImage', { image: runtime.image }) + '\n');
+                return stageOnly ? undefined : runtime;
+            }
         } catch (error) {
             if (input) routeDraft = {...input};
             input = undefined;
@@ -689,9 +745,11 @@ export async function interactiveSetup({ask, choose, output, signal, guard, chec
             } else {
                 output(t('routeStopped', { reason: error.message }) + '\n');
             }
-            const action = await select(t('routeRecovery'), [{ id: 'finish' }, { id: 'useDocker' }, { id: 'reviewColima' }]);
+            const action = await select(t(choice === '4' ? 'savedCheckRecovery' : 'routeRecovery'), [
+                { id: 'finish' }, ...(choice === '4' ? [{ id: 'checkSavedFirst' }] : []), { id: 'useDocker' }, { id: 'reviewColima' },
+            ]);
             if (!action || action === 'finish') return;
-            forcedChoice = action === 'useDocker' ? '1' : '2';
+            forcedChoice = action === 'checkSavedFirst' ? '4' : action === 'useDocker' ? '1' : '2';
         }
     }
 

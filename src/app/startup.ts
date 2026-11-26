@@ -436,9 +436,11 @@ export class ApplicationStartup {
             choose?(title: string, items: readonly UiChoice[]): Promise<string | undefined>;
             ask(question: string, value: string): Promise<string>;
             output(text: string): void;
+            checkStarted?(): void;
+            checked?(verify: () => Promise<void>): void;
             execute(file: string, args: string[], options: Record<string, unknown>): Promise<unknown>;
         }) => {
-            const captured = structuredClone(initialRuntime), { extraPackages, locale } = host;
+            const captured = structuredClone(initialRuntime), { extraPackages, locale, checkStarted, checked } = host;
             return this.serial(async () => {
                 if (this.discoveryCleanupFailure)
                     throw this.discoveryCleanupFailure;
@@ -457,6 +459,10 @@ export class ApplicationStartup {
                         initialRuntime: captured, extraPackages, locale, stageOnly: true, home: this.controller.applicationHome(), signal: abort.signal,
                         ownerHome: this.runtimeEnvironment.HOME, env: this.runtimeEnvironment,
                         guard: check, checkPath, choose: host.choose, ask: host.ask, output: host.output, execute,
+                        checkStarted,
+                        onCheckedRoute: checked && ((verify: (guards: { checkPath: (file: string) => void }) => Promise<void>) => {
+                            checked(() => verify({ checkPath }));
+                        }),
                     });
                     check();
                     return result;
