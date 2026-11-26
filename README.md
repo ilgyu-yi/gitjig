@@ -60,7 +60,7 @@ Opening the UI and managing accounts/settings do not require a model turn or exe
 | Submit project files and inspect captured inputs | [File context](docs/file-context.md) |
 | Configure steering and follow-up queues | [Queue preferences](docs/session-preferences.md) |
 
-Press Ctrl+G for the command menu. Shift+Up/Down navigates to an immediate parent/child; split view is optional. Each pane retains its own draft and history. History navigation changes conversation context, not Git checkout state.
+Press Ctrl+G for the command menu. Shift+Up opens the immediate parent. Shift+Down opens the only accessible child or shows a tree to choose among several direct children. Split view is optional. Each pane retains its own draft and history. History navigation changes conversation context, not Git checkout state.
 
 Required procedures gate managed actions. Review success, account permissions and explicit delegation are separate conditions. Local/repository operations do not require internal agent planning or review transcripts.
 
